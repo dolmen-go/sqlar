@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -35,7 +36,7 @@ type fileinfo struct {
 	name string
 	// Note: mode is not portable "sqlite3 -Ac" uses the mode of the OS which varies
 	// /Library/Developer/CommandLineTools/SDKs/MacOSX13.1.sdk/usr/include/sys/_types/_s_ifmt.h
-	mode  fs.FileMode
+	mode  uint32
 	mtime int64
 	sz    int64
 }
@@ -56,7 +57,16 @@ func (fi *fileinfo) Size() int64 {
 
 // Mode implements interface [fs.FileInfo].
 func (fi *fileinfo) Mode() fs.FileMode {
-	return fi.mode
+	// Check conversion implementation for the os.Stat function:
+	// sed -n '/^func fillFileStatFromSys/,/^}/p' $(go env GOROOT)/src/os/stat_*.go
+	mode := fs.FileMode(fi.mode & 0777)
+	switch fi.mode & syscall.S_IFMT {
+	case syscall.S_IFDIR:
+		mode |= fs.ModeDir
+	case syscall.S_IFREG:
+		// Do nothing
+	}
+	return mode
 }
 
 // ModTime implements interface [fs.FileInfo].
@@ -71,12 +81,15 @@ func (fi *fileinfo) Sys() any {
 
 // IsDir implements interface [fs.DirEntry].
 func (fi *fileinfo) IsDir() bool {
-	return fi.mode&fs.ModeDir != 0
+	return fi.mode&syscall.S_IFDIR != 0
 }
 
 // Type implements interface [fs.DirEntry].
 func (fi *fileinfo) Type() fs.FileMode {
-	return fi.mode
+	if fi.IsDir() {
+		return fs.ModeDir
+	}
+	return 0
 }
 
 // Info implements interface [fs.DirEntry].
@@ -88,7 +101,12 @@ const escapeLikeChar = "§"
 
 var escapeLike = strings.NewReplacer("%", escapeLikeChar+"%", "_", escapeLikeChar+"_", "!", escapeLikeChar+"!")
 
-const dirMode = fs.ModeDir | 0555
+const (
+	dirMode          uint32 = syscall.S_IFDIR | 0555
+	sqlModeFilter           = `((mode&49152)>>9)<>0` // Skip files with broken mode: 49152 = syscall.S_IFREG|syscall.S_IFDIR
+	sqlModeFilterDir        = `(mode&16384)<>0`      // 16384 = syscall.S_IFDIR => directories
+	sqlModeFilterReg        = `(mode32768)<>0`       // 327668 = syscall.S_IFREG => regular files
+)
 
 func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
@@ -107,10 +125,10 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 		` FROM sqlar`+
 		` WHERE name LIKE ? ESCAPE '`+escapeLikeChar+`'`+
 		` AND name NOT LIKE ? ESCAPE '`+escapeLikeChar+`'`+
-		//` AND (mode>>16)=0`+ // Skip files with broken mode
+		` AND `+sqlModeFilter+ // Skip files with broken mode
 		` UNION ALL`+
-		// Subdirectories: entries created from filenames in subdirs
-		` SELECT DISTINCT SUBSTR(name, ?, INSTR(SUBSTR(name, ?), '/')-1),2147484013,0,0`+ // mode is: fs.ModeDir | 0555
+		// Subdirectories: emulate entries from filenames in subdirs
+		` SELECT DISTINCT SUBSTR(name, ?, INSTR(SUBSTR(name, ?), '/')-1),16749,0,0`+ // mode is: syscall.S_IFDIR | 0555
 		` FROM sqlar`+
 		` WHERE name LIKE ? ESCAPE '`+escapeLikeChar+`'`+
 		` AND name NOT LIKE ? ESCAPE '`+escapeLikeChar+`'`,
@@ -137,7 +155,7 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		// Some archives may have entries for directories
 		// In that case we ignore the duplicates we created in the SQL
-		if fi.mode.IsDir() {
+		if fi.IsDir() {
 			if _, seen := subdirs[fi.name]; seen {
 				continue
 			}
@@ -173,7 +191,7 @@ func (f *file) Read(b []byte) (int, error) {
 			return 0, fs.ErrPermission
 		}
 		var buf []byte
-		if err := f.fs.db.QueryRow("SELECT data FROM sqlar WHERE name=? AND (mode>>16)=0", f.info.name).Scan(&buf); err != nil {
+		if err := f.fs.db.QueryRow("SELECT data FROM sqlar WHERE name=? AND "+sqlModeFilterReg, f.info.name).Scan(&buf); err != nil {
 			if err == sql.ErrNoRows {
 				return 0, fs.ErrNotExist
 			}
@@ -219,11 +237,12 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 			`SELECT name,mode,mtime,sz`+
 			` FROM sqlar`+
 			` WHERE name=?`+
-			` AND (mode>>16)=0`+ // Skip file with broken mode
+			` AND `+sqlModeFilter+ // Skip file with broken mode
 			` LIMIT 1`,
 			name,
 		).Scan)
 	if err == sql.ErrNoRows {
+		// TODO: emulate directories like in ReadDir
 		return nil, fs.ErrNotExist
 	}
 	return &info, nil
