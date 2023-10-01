@@ -188,52 +188,6 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, rows.Close()
 }
 
-// file gives access to a file in an SQLite Archive file.
-//
-// *file implements interface [fs.File].
-type file struct {
-	fs   *arfs
-	info fileinfo
-	r    io.ReadCloser
-}
-
-func (f *file) Stat() (fs.FileInfo, error) {
-	return &f.info, nil
-}
-
-func (f *file) Read(b []byte) (int, error) {
-	if f.r == nil {
-		if f.fs == nil { // Closed
-			return 0, io.EOF
-		}
-		if f.info.mode&0444 == 0 {
-			return 0, fs.ErrPermission
-		}
-		var buf []byte
-		if err := f.fs.db.QueryRow("SELECT data FROM sqlar WHERE name=? AND "+sqlModeFilterReg, f.info.name).Scan(&buf); err != nil {
-			if err == sql.ErrNoRows {
-				return 0, fs.ErrNotExist
-			}
-			return 0, err
-		}
-		if len(buf) == int(f.info.sz) {
-			f.r = io.NopCloser(bytes.NewReader(buf))
-		} else {
-			f.r = flate.NewReader(bytes.NewReader(buf))
-		}
-	}
-	return f.r.Read(b)
-}
-
-func (f *file) Close() error {
-	r := f.r
-	f.fs, f.r = nil, nil
-	if r == nil {
-		return nil
-	}
-	return r.Close()
-}
-
 // Stat implements interface [fs.StatFS].
 func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	if name == "." {
@@ -278,6 +232,52 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	}
 	_, info.name = filepath.Split(name)
 	return &info, nil
+}
+
+// file gives access to a file in an SQLite Archive file.
+//
+// *file implements interface [fs.File].
+type file struct {
+	fs   *arfs
+	info fileinfo
+	r    io.ReadCloser
+}
+
+func (f *file) Stat() (fs.FileInfo, error) {
+	return &f.info, nil
+}
+
+func (f *file) Read(b []byte) (int, error) {
+	if f.r == nil {
+		if f.fs == nil { // Closed
+			return 0, io.EOF
+		}
+		if f.info.mode&0444 == 0 {
+			return 0, fs.ErrPermission
+		}
+		var buf []byte
+		if err := f.fs.db.QueryRow("SELECT data FROM sqlar WHERE name=? AND "+sqlModeFilterReg, f.info.name).Scan(&buf); err != nil {
+			if err == sql.ErrNoRows {
+				return 0, fs.ErrNotExist
+			}
+			return 0, err
+		}
+		if len(buf) == int(f.info.sz) {
+			f.r = io.NopCloser(bytes.NewReader(buf))
+		} else {
+			f.r = flate.NewReader(bytes.NewReader(buf))
+		}
+	}
+	return f.r.Read(b)
+}
+
+func (f *file) Close() error {
+	r := f.r
+	f.fs, f.r = nil, nil
+	if r == nil {
+		return nil
+	}
+	return r.Close()
 }
 
 // Open implements interface [fs.FS].
