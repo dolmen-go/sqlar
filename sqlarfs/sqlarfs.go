@@ -16,14 +16,16 @@ import (
 	"time"
 )
 
-// FS documents the [io/fs] interfaces implemented.
+// FS documents the [io/fs] interfaces provided by this implementation of [io/fs.FS].
 type FS interface {
 	fs.FS
 	fs.StatFS
 	fs.ReadDirFS
 }
 
-// New returns an instance of [io/fs.FS] that allows to access the files in a SQLite Archive File opened with [database/sql].
+// New returns an instance of [io/fs.FS] that allows to access the files in a [SQLite Archive File] opened with [database/sql].
+//
+// [SQLite Archive File]: https://sqlite.org/sqlar.html
 func New(db *sql.DB) FS {
 	return &arfs{db: db}
 }
