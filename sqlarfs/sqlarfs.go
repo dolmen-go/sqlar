@@ -36,6 +36,7 @@ type arfs struct {
 
 var _ FS = (*arfs)(nil)
 
+// fileinfo implements interfaces [fs.FileInfo] and [fs.DirEntry].
 type fileinfo struct {
 	name string
 	// Note: mode is not portable "sqlite3 -Ac" uses the mode of the OS which varies
@@ -44,6 +45,12 @@ type fileinfo struct {
 	mtime int64
 	sz    int64
 }
+
+var _ interface {
+	fmt.Stringer
+	fs.FileInfo
+	fs.DirEntry
+} = (*fileinfo)(nil)
 
 // String implements interface [fmt.Stringer].
 func (fi *fileinfo) String() string {
@@ -181,6 +188,9 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, rows.Close()
 }
 
+// file gives access to a file in an SQLite Archive file.
+//
+// *file implements interface [fs.File].
 type file struct {
 	fs   *arfs
 	info fileinfo
