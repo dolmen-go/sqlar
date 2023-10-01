@@ -39,8 +39,7 @@ var _ FS = (*arfs)(nil)
 // fileinfo implements interfaces [fs.FileInfo] and [fs.DirEntry].
 type fileinfo struct {
 	name string
-	// Note: mode is not portable "sqlite3 -Ac" uses the mode of the OS which varies
-	// /Library/Developer/CommandLineTools/SDKs/MacOSX13.1.sdk/usr/include/sys/_types/_s_ifmt.h
+	// Note: mode is not io/fs.FileMode but instead the Unix S_IF* bits
 	mode  uint32
 	mtime int64
 	sz    int64
