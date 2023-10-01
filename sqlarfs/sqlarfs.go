@@ -253,7 +253,7 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	if err == sql.ErrNoRows {
 		// Emulate directories like in ReadDir
 		var ok bool
-		if ar.db.QueryRow(``+
+		if err = ar.db.QueryRow(``+
 			`SELECT 1`+
 			` FROM sqlar`+
 			` WHERE SUBSTR(name,?)=?`+
