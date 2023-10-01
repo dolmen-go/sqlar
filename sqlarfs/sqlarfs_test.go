@@ -2,6 +2,7 @@ package sqlarfs_test
 
 import (
 	"database/sql"
+	"io"
 	"io/fs"
 	"testing"
 
@@ -45,6 +46,34 @@ func TestSimple(t *testing.T) {
 		t.Logf("%24q: %s %11o %10d %-30s  %s", path, info.Mode(), uint32(info.Mode()), info.Size(), info.ModTime(), info.Name())
 		return nil
 	})
+
+	for _, name := range []string{
+		".",
+		"foo.txt",
+		"bar.txt",
+	} {
+		fi, err := fs.Stat(ar, name)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		t.Log(fi)
+		if fi.IsDir() {
+			continue
+		}
+
+		f, err := ar.Open(name)
+		if err != nil {
+			t.Errorf("Open(%q): %v", name, err)
+			continue
+		}
+		defer f.Close()
+		b, err := io.ReadAll(f)
+		if err != nil {
+			t.Errorf("Read(%q): %v", name, err)
+		}
+		t.Logf("%s: %q", name, string(b))
+	}
 }
 
 func TestDir(t *testing.T) {

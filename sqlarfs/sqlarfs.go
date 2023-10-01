@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"compress/flate"
 	"database/sql"
+	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +41,11 @@ type fileinfo struct {
 	mode  uint32
 	mtime int64
 	sz    int64
+}
+
+// String implements interface [fmt.Stringer].
+func (fi *fileinfo) String() string {
+	return fmt.Sprintf("%s %10d %-30s  %s", fi.Mode(), fi.Size(), fi.ModTime(), fi.Name())
 }
 
 func (fi *fileinfo) scan(scan func(dest ...any) error) error {
@@ -105,7 +112,7 @@ const (
 	dirMode          uint32 = syscall.S_IFDIR | 0555
 	sqlModeFilter           = `((mode&49152)>>9)<>0` // Skip files with broken mode: 49152 = syscall.S_IFREG|syscall.S_IFDIR
 	sqlModeFilterDir        = `(mode&16384)<>0`      // 16384 = syscall.S_IFDIR => directories
-	sqlModeFilterReg        = `(mode32768)<>0`       // 327668 = syscall.S_IFREG => regular files
+	sqlModeFilterReg        = `(mode&32768)<>0`      // 32768 = syscall.S_IFREG => regular files
 )
 
 func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
@@ -210,7 +217,7 @@ func (f *file) Close() error {
 	r := f.r
 	f.fs, f.r = nil, nil
 	if r == nil {
-		return io.EOF
+		return nil
 	}
 	return r.Close()
 }
@@ -242,9 +249,22 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 			name,
 		).Scan)
 	if err == sql.ErrNoRows {
-		// TODO: emulate directories like in ReadDir
-		return nil, fs.ErrNotExist
+		// Emulate directories like in ReadDir
+		var ok bool
+		if ar.db.QueryRow(``+
+			`SELECT 1`+
+			` FROM sqlar`+
+			` WHERE SUBSTR(name,?)=?`+
+			` LIMIT 1`,
+			len(name)+1,
+			name+"/",
+		).Scan(&ok); err == nil && ok {
+			info.mode = dirMode
+		} else {
+			return nil, fs.ErrNotExist
+		}
 	}
+	_, info.name = filepath.Split(name)
 	return &info, nil
 }
 
