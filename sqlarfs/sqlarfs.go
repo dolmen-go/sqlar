@@ -256,10 +256,19 @@ func (f *file) Read(b []byte) (int, error) {
 			return 0, fs.ErrPermission
 		}
 		var buf []byte
-		if err := f.fs.db.QueryRow("SELECT data FROM sqlar WHERE name=? AND "+sqlModeFilterReg, f.info.name).Scan(&buf); err != nil {
-			if err == sql.ErrNoRows {
-				return 0, fs.ErrNotExist
-			}
+		err := f.fs.db.QueryRow(``+
+			`SELECT data`+
+			` FROM sqlar`+
+			` WHERE name=?`+
+			` AND `+sqlModeFilterReg,
+			f.info.name,
+		).Scan(&buf)
+		switch err {
+		case nil:
+			// OK
+		case sql.ErrNoRows:
+			return 0, fs.ErrNotExist
+		default:
 			return 0, err
 		}
 		if len(buf) == int(f.info.sz) {
