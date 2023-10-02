@@ -25,7 +25,9 @@ type FS interface {
 
 // New returns an instance of [io/fs.FS] that allows to access the files in a [SQLite Archive File] opened with [database/sql].
 //
-// The default permission mask used to enforce file permissions (mode column in the sqlar table) is [PermAny].
+// db is an [sql/database] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
+//
+// The default permission mask used to enforce file permissions ('mode' column in the sqlar table) is [PermAny].
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
 func New(db *sql.DB, opts ...Option) FS {
