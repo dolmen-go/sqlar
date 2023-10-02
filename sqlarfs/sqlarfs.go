@@ -300,21 +300,30 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 			` LIMIT 1`,
 			name,
 		).Scan)
-	if err == sql.ErrNoRows {
+	switch err {
+	case nil:
+		// OK
+	case sql.ErrNoRows:
 		// Emulate directories like in ReadDir
 		var ok bool
-		if err = ar.db.QueryRow(``+
+		err = ar.db.QueryRow(``+
 			`SELECT 1`+
 			` FROM sqlar`+
 			` WHERE SUBSTR(name,?)=?`+
 			` LIMIT 1`,
 			len(name)+1,
 			name+"/",
-		).Scan(&ok); err == nil && ok {
+		).Scan(&ok)
+		switch {
+		case err == nil && ok:
 			info.mode = dirMode
-		} else {
+		case err == sql.ErrNoRows || err == nil: // Case "err == nil" should never happen
 			return nil, fs.ErrNotExist
+		default:
+			return nil, err
 		}
+	default:
+		return nil, err
 	}
 	info.name = filename
 	return &info, nil
