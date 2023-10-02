@@ -25,16 +25,57 @@ type FS interface {
 
 // New returns an instance of [io/fs.FS] that allows to access the files in a [SQLite Archive File] opened with [database/sql].
 //
+// The default permission mask used to enforce file permissions (mode column in the sqlar table) is [PermAny].
+//
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
-func New(db *sql.DB) FS {
-	return &arfs{db: db}
+func New(db *sql.DB, opts ...Option) FS {
+	ar := &arfs{db: db, permMask: PermAny}
+	for _, o := range opts {
+		o.apply(ar)
+	}
+	return ar
 }
 
 type arfs struct {
-	db *sql.DB
+	db       *sql.DB
+	permMask PermMask
+}
+
+func (ar *arfs) canRead(mode uint32) bool {
+	return mode&0444&uint32(ar.permMask) != 0
+}
+
+func (ar *arfs) canTraverse(mode uint32) bool {
+	return mode&0111&uint32(ar.permMask) != 0
 }
 
 var _ FS = (*arfs)(nil)
+
+type Option interface {
+	apply(*arfs)
+}
+
+const (
+	PermOwner  PermMask = 0700
+	PermGroup  PermMask = 0070
+	PermOthers PermMask = 0007
+	PermAny    PermMask = 0777 // Allow to read (traverse for directories) any file that have at least one permission bit for either owner/group/others
+)
+
+// PermMask is a permission mask for enforcing [fs.FileMode] permissions in a SQLite Archive File.
+//
+// PermMask is an [Option] for [New].
+type PermMask uint32
+
+func (p PermMask) apply(ar *arfs) {
+	switch p {
+	// We do not accept any other values than the constants
+	case PermOwner, PermGroup, PermOthers, PermAny:
+		ar.permMask = p
+	default:
+		panic(fmt.Errorf("sqlar.New: invalid permission mask value"))
+	}
+}
 
 // fileinfo implements interfaces [fs.FileInfo] and [fs.DirEntry].
 type fileinfo struct {
@@ -130,6 +171,16 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	if name == "." {
 		name = ""
 	} else {
+		fi, err := ar.stat(name)
+		if err != nil {
+			return nil, err
+		}
+		if !fi.IsDir() {
+			return nil, fs.ErrInvalid
+		}
+		if !ar.canRead(fi.mode) {
+			return nil, fs.ErrPermission
+		}
 		name = name + "/"
 	}
 
@@ -190,17 +241,47 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 // Stat implements interface [fs.StatFS].
 func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	if name == "." {
-		// FIXME Do a dummy query to ensure the sqlar table is available
-		return &fileinfo{
-			name:  ".",
-			mode:  dirMode,
-			mtime: 0,
-			sz:    0,
-		}, nil
+		return ar.statRoot(), nil
 	}
 
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
+	}
+
+	fi, err := ar.stat(name)
+	if err != nil {
+		// Avoid returning (*fileinfo)(nil) instead of (fs.FileInfo)(nil)
+		return nil, err
+	}
+	return fi, err
+}
+
+func (ar *arfs) statRoot() *fileinfo {
+	// FIXME Do a dummy query to ensure the sqlar table is available
+	return &fileinfo{
+		name:  ".",
+		mode:  dirMode,
+		mtime: 0,
+		sz:    0,
+	}
+}
+
+// Stat implements interface [fs.StatFS].
+func (ar *arfs) stat(name string) (*fileinfo, error) {
+	dir, filename := filepath.Split(name)
+	if dir != "" {
+		// Recursively check that we can traverse the tree
+		// Note: dir has a trailing '/'
+		fi, err := ar.stat(dir[:len(dir)-1])
+		if err != nil {
+			return nil, err
+		}
+		if !fi.IsDir() {
+			return nil, fs.ErrNotExist
+		}
+		if !ar.canTraverse(fi.mode) {
+			return nil, fs.ErrInvalid
+		}
 	}
 
 	var info fileinfo
@@ -229,7 +310,7 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 			return nil, fs.ErrNotExist
 		}
 	}
-	_, info.name = filepath.Split(name)
+	info.name = filename
 	return &info, nil
 }
 
@@ -251,7 +332,7 @@ func (f *file) Read(b []byte) (int, error) {
 		if f.fs == nil { // Closed
 			return 0, io.EOF
 		}
-		if f.info.mode&0444 == 0 {
+		if !f.fs.canRead(f.info.mode) {
 			return 0, fs.ErrPermission
 		}
 		var buf []byte
@@ -290,12 +371,19 @@ func (f *file) Close() error {
 
 // Open implements interface [fs.FS].
 func (ar *arfs) Open(name string) (fs.File, error) {
-	var ff file
-	info, err := ar.Stat(name)
-	if err != nil {
-		return nil, err
+	var info *fileinfo
+	if name == "." {
+		info = ar.statRoot()
+	} else {
+		if !fs.ValidPath(name) {
+			return nil, fs.ErrInvalid
+		}
+		var err error
+		info, err = ar.stat(name)
+		if err != nil {
+			return nil, err
+		}
 	}
-	ff.info = *(info.(*fileinfo))
-	ff.fs = ar
-	return &ff, nil
+
+	return &file{fs: ar, info: *info}, nil
 }

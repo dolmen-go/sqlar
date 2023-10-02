@@ -29,13 +29,13 @@ func openDB(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-func openFS(t *testing.T, path string) fs.FS {
+func openFS(t *testing.T, path string, opts ...sqlarfs.Option) fs.FS {
 	db := openDB(t, path)
-	return sqlarfs.New(db)
+	return sqlarfs.New(db, opts...)
 }
 
 func TestSimple(t *testing.T) {
-	ar := openFS(t, "testdata/simple.sqlar")
+	ar := openFS(t, "testdata/simple.sqlar", sqlarfs.PermOwner)
 	// ar := os.DirFS("testdata/simple")
 	fs.WalkDir(ar, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -77,7 +77,7 @@ func TestSimple(t *testing.T) {
 }
 
 func TestDir(t *testing.T) {
-	ar := openFS(t, "testdata/dir.sqlar")
+	ar := openFS(t, "testdata/dir.sqlar", sqlarfs.PermOwner)
 	// ar := os.DirFS("testdata/dir")
 	fs.WalkDir(ar, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
