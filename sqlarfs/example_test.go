@@ -34,6 +34,7 @@ func Example() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer f.Close()
 	fmt.Println("foo.txt:")
 	io.Copy(os.Stdout, f)
 	// Output:
