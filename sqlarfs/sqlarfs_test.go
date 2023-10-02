@@ -12,6 +12,10 @@ import (
 
 var sqliteDriver string
 
+func TestShowDriver(t *testing.T) {
+	t.Log(sqliteDriver)
+}
+
 func openDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open(sqliteDriver, path)
