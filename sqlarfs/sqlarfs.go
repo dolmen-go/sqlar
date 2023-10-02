@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -41,6 +42,8 @@ func New(db *sql.DB, opts ...Option) FS {
 type arfs struct {
 	db       *sql.DB
 	permMask PermMask
+
+	dirInfo dirInfoCache
 }
 
 func (ar *arfs) canRead(mode uint32) bool {
@@ -159,6 +162,32 @@ func (fi *fileinfo) Info() (fs.FileInfo, error) {
 	return fi, nil
 }
 
+type dirInfoCache struct {
+	mu   sync.RWMutex
+	info map[string]*fileinfo // Keys are directory paths validated with io/fs.ValidPath
+}
+
+func (di *dirInfoCache) load(path string) *fileinfo {
+	di.mu.RLock()
+	defer di.mu.RUnlock()
+	return di.info[path]
+}
+
+func (di *dirInfoCache) store(path string, fi *fileinfo) *fileinfo {
+	di.mu.Lock()
+	defer di.mu.Unlock()
+	if di.info == nil {
+		di.info = make(map[string]*fileinfo)
+	} else {
+		// Keep the earlier value because a new one has been recently allocated
+		if fi2 := di.info[path]; fi2 != nil {
+			return fi2
+		}
+	}
+	di.info[path] = fi
+	return fi
+}
+
 const escapeLikeChar = "§"
 
 var escapeLike = strings.NewReplacer("%", escapeLikeChar+"%", "_", escapeLikeChar+"_", "!", escapeLikeChar+"!")
@@ -221,7 +250,7 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	var subdirs map[string]struct{}
 
 	for rows.Next() {
-		var fi fileinfo
+		fi := new(fileinfo)
 		if err := fi.scan(rows.Scan); err != nil {
 			return entries, err
 		}
@@ -235,8 +264,9 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 				subdirs = make(map[string]struct{})
 			}
 			subdirs[fi.name] = struct{}{}
+			fi = ar.dirInfo.store(name+"/"+fi.name, fi)
 		}
-		entries = append(entries, &fi)
+		entries = append(entries, fi)
 	}
 	if err := rows.Err(); err != err {
 		return entries, err
@@ -290,7 +320,13 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 		}
 	}
 
-	var info fileinfo
+	info := ar.dirInfo.load(name)
+	if info != nil {
+		return info, nil
+	}
+
+	info = new(fileinfo)
+
 	err := info.scan(
 		ar.db.QueryRow(``+
 			`SELECT name,mode,mtime,sz`+
@@ -326,7 +362,12 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 		return nil, err
 	}
 	info.name = filename
-	return &info, nil
+
+	if info.IsDir() {
+		info = ar.dirInfo.store(name, info)
+	}
+
+	return info, nil
 }
 
 // file gives access to a file in an SQLite Archive file.
