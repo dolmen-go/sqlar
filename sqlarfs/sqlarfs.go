@@ -23,11 +23,11 @@ type FS interface {
 	fs.ReadDirFS
 }
 
-// New returns an instance of [io/fs.FS] that allows to access the files in a [SQLite Archive File] opened with [database/sql].
+// New returns an instance of [io/fs.FS] that allows to access the files in an [SQLite Archive File] opened with [database/sql].
 //
 // db is an [sql/database] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
 //
-// The default permission mask used to enforce file permissions ('mode' column in the sqlar table) is [PermAny].
+// The default permission mask used to enforce file permissions ('mode' column in the 'sqlar' table) is [PermAny].
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
 func New(db *sql.DB, opts ...Option) FS {
@@ -53,6 +53,9 @@ func (ar *arfs) canTraverse(mode uint32) bool {
 
 var _ FS = (*arfs)(nil)
 
+// Option is an option for [New].
+//
+// Available options: [PermOwner], [PermGroup], [PermOthers], [PermAny].
 type Option interface {
 	apply(*arfs)
 }
@@ -64,7 +67,8 @@ const (
 	PermAny    PermMask = 0777 // Allow to read (traverse for directories) any file that have at least one permission bit for either owner/group/others
 )
 
-// PermMask is a permission mask for enforcing [fs.FileMode] permissions in a SQLite Archive File.
+// PermMask is a permission mask for enforcing [fs.FileMode] permissions
+// (disallow to read files, disallow traversing or listing directories) in an SQLite Archive File.
 //
 // PermMask is an [Option] for [New].
 type PermMask uint32
