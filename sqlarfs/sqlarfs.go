@@ -410,10 +410,10 @@ func (f *file) Stat() (fs.FileInfo, error) {
 func (f *file) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
-			return 0, fs.ErrClosed
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrClosed}
 		}
 		if !f.fs.canRead(f.info.mode) {
-			return 0, fs.ErrPermission
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrPermission}
 		}
 		var buf []byte
 		err := f.fs.db.QueryRow(``+
@@ -427,9 +427,9 @@ func (f *file) Read(b []byte) (int, error) {
 		case nil:
 			// OK
 		case sql.ErrNoRows:
-			return 0, fs.ErrNotExist
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
 		default:
-			return 0, err
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: err}
 		}
 		if len(buf) == int(f.info.sz) {
 			f.r = io.NopCloser(bytes.NewReader(buf))
