@@ -458,13 +458,6 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 
 	// FIXME naive implementation
 
-	if n <= 0 {
-		if len(d.entries) == 0 && d.entries != nil {
-			return nil, nil
-		}
-		d.entries = []fs.DirEntry{}
-		return d.file.fs.readDir(d.file.path)
-	}
 	if d.entries == nil {
 		var err error
 		d.entries, err = d.file.fs.readDir(d.file.path)
@@ -472,13 +465,11 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 			return nil, err
 		}
 	}
-	/*
-		if n <= 0 {
-			e := d.entries
-			d.entries = nil
-			return e, nil
-		}
-	*/
+	if n <= 0 {
+		e := d.entries
+		d.entries = []fs.DirEntry{}
+		return e, nil
+	}
 	if len(d.entries) <= n {
 		e := d.entries
 		d.entries = []fs.DirEntry{}
