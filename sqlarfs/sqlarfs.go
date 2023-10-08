@@ -497,7 +497,7 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 		info = ar.statRoot()
 	} else {
 		if !fs.ValidPath(name) {
-			return nil, fs.ErrInvalid
+			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 		}
 		var err error
 		info, err = ar.stat(name)
