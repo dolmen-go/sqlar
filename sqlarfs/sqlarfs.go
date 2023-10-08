@@ -383,13 +383,16 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 type file struct {
 	fs   *arfs
 	info fileinfo
+	path string
 	r    io.ReadCloser
 }
 
+// Stat implements interface [fs.File].
 func (f *file) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
 }
 
+// Read implements interface [fs.File].
 func (f *file) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
@@ -404,7 +407,7 @@ func (f *file) Read(b []byte) (int, error) {
 			` FROM sqlar`+
 			` WHERE name=?`+
 			` AND `+sqlModeFilterReg,
-			f.info.name,
+			f.path,
 		).Scan(&buf)
 		switch err {
 		case nil:
@@ -423,6 +426,7 @@ func (f *file) Read(b []byte) (int, error) {
 	return f.r.Read(b)
 }
 
+// Close implements interface [fs.File].
 func (f *file) Close() error {
 	r := f.r
 	f.fs, f.r = nil, nil
@@ -448,5 +452,5 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 		}
 	}
 
-	return &file{fs: ar, info: *info}, nil
+	return &file{fs: ar, info: *info, path: name}, nil
 }
