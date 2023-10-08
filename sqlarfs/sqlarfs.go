@@ -201,6 +201,17 @@ const (
 )
 
 func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
+	list, err := ar.readDir(name)
+	if len(list) > 0 {
+		// FIXME Sort more efficently by avoiding going through fs.DirEntry interface
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].(*fileinfo).name < list[j].(*fileinfo).name
+		})
+	}
+	return list, err
+}
+
+func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
 	}
@@ -269,11 +280,6 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		entries = append(entries, fi)
 	}
-
-	// FIXME Sort more efficently by avoiding going through fs.DirEntry interface
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].(*fileinfo).name < entries[j].(*fileinfo).name
-	})
 
 	if err := rows.Err(); err != err {
 		return entries, err
@@ -452,11 +458,11 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 			return nil, nil
 		}
 		d.entries = []fs.DirEntry{}
-		return d.file.fs.ReadDir(d.file.path)
+		return d.file.fs.readDir(d.file.path)
 	}
 	if d.entries == nil {
 		var err error
-		d.entries, err = d.file.fs.ReadDir(d.file.path)
+		d.entries, err = d.file.fs.readDir(d.file.path)
 		if err != nil {
 			return nil, err
 		}
