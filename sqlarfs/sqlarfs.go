@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -268,6 +269,12 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		entries = append(entries, fi)
 	}
+
+	// FIXME Sort more efficently by avoiding going through fs.DirEntry interface
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].(*fileinfo).name < entries[j].(*fileinfo).name
+	})
+
 	if err := rows.Err(); err != err {
 		return entries, err
 	}
