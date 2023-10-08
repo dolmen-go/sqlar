@@ -410,7 +410,7 @@ func (f *file) Stat() (fs.FileInfo, error) {
 func (f *file) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
-			return 0, io.EOF
+			return 0, fs.ErrClosed
 		}
 		if !f.fs.canRead(f.info.mode) {
 			return 0, fs.ErrPermission
@@ -452,7 +452,12 @@ func (f *file) Close() error {
 
 // ReadDir implements interface [fs.ReadDirFile].
 func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.file.fs == nil {
+		return nil, fs.ErrClosed
+	}
+
 	// FIXME naive implementation
+
 	if n <= 0 {
 		if len(d.entries) == 0 && d.entries != nil {
 			return nil, nil
