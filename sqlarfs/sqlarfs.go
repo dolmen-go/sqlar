@@ -387,6 +387,14 @@ type file struct {
 	r    io.ReadCloser
 }
 
+// dir gives access to a directory in an SQLite Archive file.
+//
+// *dir implements interface [fs.ReadDirFile].
+type dir struct {
+	file
+	entries []fs.DirEntry
+}
+
 // Stat implements interface [fs.File].
 func (f *file) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
@@ -436,6 +444,41 @@ func (f *file) Close() error {
 	return r.Close()
 }
 
+// ReadDir implements interface [fs.ReadDirFile].
+func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
+	// FIXME naive implementation
+	if n <= 0 {
+		if len(d.entries) == 0 && d.entries != nil {
+			return nil, nil
+		}
+		d.entries = []fs.DirEntry{}
+		return d.file.fs.ReadDir(d.file.path)
+	}
+	if d.entries == nil {
+		var err error
+		d.entries, err = d.file.fs.ReadDir(d.file.path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	/*
+		if n <= 0 {
+			e := d.entries
+			d.entries = nil
+			return e, nil
+		}
+	*/
+	if len(d.entries) <= n {
+		e := d.entries
+		d.entries = []fs.DirEntry{}
+		return e, io.EOF
+	}
+	// TODO make a copy and clear the original (to free entries)
+	e := d.entries[:n]
+	d.entries = d.entries[n:]
+	return e, nil
+}
+
 // Open implements interface [fs.FS].
 func (ar *arfs) Open(name string) (fs.File, error) {
 	var info *fileinfo
@@ -450,6 +493,10 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if info.IsDir() {
+		return &dir{file: file{fs: ar, info: *info, path: name}}, nil
 	}
 
 	return &file{fs: ar, info: *info, path: name}, nil
