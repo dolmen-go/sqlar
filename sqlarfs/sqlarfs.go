@@ -294,15 +294,15 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	}
 
 	if !fs.ValidPath(name) {
-		return nil, fs.ErrInvalid
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
 
 	fi, err := ar.stat(name)
 	if err != nil {
 		// Avoid returning (*fileinfo)(nil) instead of (fs.FileInfo)(nil)
-		return nil, err
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
 	}
-	return fi, err
+	return fi, nil
 }
 
 func (ar *arfs) statRoot() *fileinfo {
@@ -323,13 +323,13 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 		// Note: dir has a trailing '/'
 		fi, err := ar.stat(dir[:len(dir)-1])
 		if err != nil {
-			return nil, err
+			return nil, &fs.PathError{Op: "stat", Path: dir[:len(dir)-1], Err: err}
 		}
 		if !fi.IsDir() {
 			return nil, fs.ErrNotExist
 		}
 		if !ar.canTraverse(fi.mode) {
-			return nil, fs.ErrInvalid
+			return nil, fs.ErrPermission
 		}
 	}
 
@@ -502,7 +502,7 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 		var err error
 		info, err = ar.stat(name)
 		if err != nil {
-			return nil, err
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
 	}
 
