@@ -305,14 +305,16 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	return fi, nil
 }
 
+var fileinfoRoot = fileinfo{
+	name:  ".",
+	mode:  dirMode,
+	mtime: 0,
+	sz:    0,
+}
+
 func (ar *arfs) statRoot() *fileinfo {
 	// FIXME Do a dummy query to ensure the sqlar table is available
-	return &fileinfo{
-		name:  ".",
-		mode:  dirMode,
-		mtime: 0,
-		sz:    0,
-	}
+	return &fileinfoRoot
 }
 
 // Stat implements interface [fs.StatFS].
