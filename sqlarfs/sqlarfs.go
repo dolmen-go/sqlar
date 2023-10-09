@@ -104,7 +104,7 @@ var _ interface {
 
 // String implements interface [fmt.Stringer].
 func (fi *fileinfo) String() string {
-	return fmt.Sprintf("%s %10d %-30s  %s", fi.Mode(), fi.Size(), fi.ModTime(), fi.Name())
+	return fs.FormatFileInfo(fi)
 }
 
 func (fi *fileinfo) scan(scan func(dest ...any) error) error {
