@@ -99,7 +99,6 @@ type fileinfo struct {
 var _ interface {
 	fmt.Stringer
 	fs.FileInfo
-	fs.DirEntry
 } = (*fileinfo)(nil)
 
 // String implements interface [fmt.Stringer].
@@ -135,6 +134,11 @@ func (fi *fileinfo) Mode() fs.FileMode {
 	return mode
 }
 
+// IsDir implements interface [fs.FileInfo].
+func (fi *fileinfo) IsDir() bool {
+	return fi.mode&syscall.S_IFDIR != 0
+}
+
 // ModTime implements interface [fs.FileInfo].
 func (fi *fileinfo) ModTime() time.Time {
 	return time.Unix(fi.mtime, 0)
@@ -143,24 +147,6 @@ func (fi *fileinfo) ModTime() time.Time {
 // Sys implements interface [fs.FileInfo].
 func (fi *fileinfo) Sys() any {
 	return nil
-}
-
-// IsDir implements interface [fs.DirEntry].
-func (fi *fileinfo) IsDir() bool {
-	return fi.mode&syscall.S_IFDIR != 0
-}
-
-// Type implements interface [fs.DirEntry].
-func (fi *fileinfo) Type() fs.FileMode {
-	if fi.IsDir() {
-		return fs.ModeDir
-	}
-	return 0
-}
-
-// Info implements interface [fs.DirEntry].
-func (fi *fileinfo) Info() (fs.FileInfo, error) {
-	return fi, nil
 }
 
 type dirInfoCache struct {
@@ -203,9 +189,8 @@ const (
 func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	list, err := ar.readDir(name)
 	if len(list) > 0 {
-		// FIXME Sort more efficently by avoiding going through fs.DirEntry interface
 		sort.Slice(list, func(i, j int) bool {
-			return list[i].(*fileinfo).name < list[j].(*fileinfo).name
+			return list[i].Name() < list[j].Name()
 		})
 	}
 	return list, err
@@ -278,7 +263,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 			subdirs[fi.name] = struct{}{}
 			fi = ar.dirInfo.store(name+"/"+fi.name, fi)
 		}
-		entries = append(entries, fi)
+		entries = append(entries, fs.FileInfoToDirEntry(fi))
 	}
 
 	if err := rows.Err(); err != err {
