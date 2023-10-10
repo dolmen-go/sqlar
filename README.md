@@ -7,9 +7,11 @@ See https://sqlite.org/sqlar.html
 
 ## Status
 
-Work in progress.
+v0.2.0 should be production ready.
 
-I've discovered [an issue](https://sqlite.org/forum/forumpost/852427cf1cc0adda) with the decoding of the `mode` column.
+The implementation of [sqlarfs](https://pkg.go/dev/github.com/dolmen-go/sqlar/sqlarfs) is quite
+naive so far: the DB is queried on every directory read, without caching. So it is not yet recommended
+for thousands of files, but not yet really tested. Reports of performance issues and use cases are very welcome.
 
 ## Doc
 
