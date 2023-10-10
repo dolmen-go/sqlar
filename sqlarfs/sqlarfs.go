@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -103,7 +104,7 @@ var _ interface {
 
 // String implements interface [fmt.Stringer].
 func (fi *fileinfo) String() string {
-	return fmt.Sprintf("%s %10d %-30s  %s", fi.Mode(), fi.Size(), fi.ModTime(), fi.Name())
+	return fs.FormatFileInfo(fi)
 }
 
 func (fi *fileinfo) scan(scan func(dest ...any) error) error {
@@ -200,6 +201,17 @@ const (
 )
 
 func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
+	list, err := ar.readDir(name)
+	if len(list) > 0 {
+		// FIXME Sort more efficently by avoiding going through fs.DirEntry interface
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].(*fileinfo).name < list[j].(*fileinfo).name
+		})
+	}
+	return list, err
+}
+
+func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
 	}
@@ -268,6 +280,7 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		entries = append(entries, fi)
 	}
+
 	if err := rows.Err(); err != err {
 		return entries, err
 	}
@@ -281,25 +294,27 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	}
 
 	if !fs.ValidPath(name) {
-		return nil, fs.ErrInvalid
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
 
 	fi, err := ar.stat(name)
 	if err != nil {
 		// Avoid returning (*fileinfo)(nil) instead of (fs.FileInfo)(nil)
-		return nil, err
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
 	}
-	return fi, err
+	return fi, nil
+}
+
+var fileinfoRoot = fileinfo{
+	name:  ".",
+	mode:  dirMode,
+	mtime: 0,
+	sz:    0,
 }
 
 func (ar *arfs) statRoot() *fileinfo {
 	// FIXME Do a dummy query to ensure the sqlar table is available
-	return &fileinfo{
-		name:  ".",
-		mode:  dirMode,
-		mtime: 0,
-		sz:    0,
-	}
+	return &fileinfoRoot
 }
 
 // Stat implements interface [fs.StatFS].
@@ -310,13 +325,13 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 		// Note: dir has a trailing '/'
 		fi, err := ar.stat(dir[:len(dir)-1])
 		if err != nil {
-			return nil, err
+			return nil, &fs.PathError{Op: "stat", Path: dir[:len(dir)-1], Err: err}
 		}
 		if !fi.IsDir() {
 			return nil, fs.ErrNotExist
 		}
 		if !ar.canTraverse(fi.mode) {
-			return nil, fs.ErrInvalid
+			return nil, fs.ErrPermission
 		}
 	}
 
@@ -376,20 +391,31 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 type file struct {
 	fs   *arfs
 	info fileinfo
+	path string
 	r    io.ReadCloser
 }
 
+// dir gives access to a directory in an SQLite Archive file.
+//
+// *dir implements interface [fs.ReadDirFile].
+type dir struct {
+	file
+	entries []fs.DirEntry
+}
+
+// Stat implements interface [fs.File].
 func (f *file) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
 }
 
+// Read implements interface [fs.File].
 func (f *file) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
-			return 0, io.EOF
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrClosed}
 		}
 		if !f.fs.canRead(f.info.mode) {
-			return 0, fs.ErrPermission
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrPermission}
 		}
 		var buf []byte
 		err := f.fs.db.QueryRow(``+
@@ -397,15 +423,15 @@ func (f *file) Read(b []byte) (int, error) {
 			` FROM sqlar`+
 			` WHERE name=?`+
 			` AND `+sqlModeFilterReg,
-			f.info.name,
+			f.path,
 		).Scan(&buf)
 		switch err {
 		case nil:
 			// OK
 		case sql.ErrNoRows:
-			return 0, fs.ErrNotExist
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
 		default:
-			return 0, err
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: err}
 		}
 		if len(buf) == int(f.info.sz) {
 			f.r = io.NopCloser(bytes.NewReader(buf))
@@ -416,6 +442,7 @@ func (f *file) Read(b []byte) (int, error) {
 	return f.r.Read(b)
 }
 
+// Close implements interface [fs.File].
 func (f *file) Close() error {
 	r := f.r
 	f.fs, f.r = nil, nil
@@ -425,6 +452,37 @@ func (f *file) Close() error {
 	return r.Close()
 }
 
+// ReadDir implements interface [fs.ReadDirFile].
+func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
+	if d.file.fs == nil {
+		return nil, fs.ErrClosed
+	}
+
+	// FIXME naive implementation
+
+	if d.entries == nil {
+		var err error
+		d.entries, err = d.file.fs.readDir(d.file.path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if n <= 0 {
+		e := d.entries
+		d.entries = []fs.DirEntry{}
+		return e, nil
+	}
+	if len(d.entries) <= n {
+		e := d.entries
+		d.entries = []fs.DirEntry{}
+		return e, io.EOF
+	}
+	// TODO make a copy and clear the original (to free entries)
+	e := d.entries[:n]
+	d.entries = d.entries[n:]
+	return e, nil
+}
+
 // Open implements interface [fs.FS].
 func (ar *arfs) Open(name string) (fs.File, error) {
 	var info *fileinfo
@@ -432,14 +490,18 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 		info = ar.statRoot()
 	} else {
 		if !fs.ValidPath(name) {
-			return nil, fs.ErrInvalid
+			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 		}
 		var err error
 		info, err = ar.stat(name)
 		if err != nil {
-			return nil, err
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
 	}
 
-	return &file{fs: ar, info: *info}, nil
+	if info.IsDir() {
+		return &dir{file: file{fs: ar, info: *info, path: name}}, nil
+	}
+
+	return &file{fs: ar, info: *info, path: name}, nil
 }

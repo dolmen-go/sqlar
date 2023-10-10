@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"testing"
+	"testing/fstest"
 
 	"github.com/dolmen-go/sqlar/sqlarfs"
 	_ "github.com/mattn/go-sqlite3"
@@ -78,6 +79,10 @@ func TestSimple(t *testing.T) {
 		}
 		t.Logf("%s: %q", name, string(b))
 	}
+
+	if err := fstest.TestFS(ar, "foo.txt", "bar.txt"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDir(t *testing.T) {
@@ -92,4 +97,8 @@ func TestDir(t *testing.T) {
 		t.Logf("%24q: %s %11o %10d %-30s  %s", path, info.Mode(), uint32(info.Mode()), info.Size(), info.ModTime(), info.Name())
 		return nil
 	})
+
+	if err := fstest.TestFS(ar, "a.txt", "b.txt", "subdir", "subdir/c.txt", "subdir/d.txt", "subdir/subdir2", "subdir/subdir2/e.txt", "subdir/subdir2/f.txt"); err != nil {
+		t.Fatal(err)
+	}
 }
