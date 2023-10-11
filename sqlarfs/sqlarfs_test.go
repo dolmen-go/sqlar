@@ -116,3 +116,20 @@ func TestDir(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func BenchmarkDir(b *testing.B) {
+	ar := openFS(b, "testdata/dir.sqlar", sqlarfs.PermOwner)
+	files := []string{"a.txt", "b.txt", "subdir", "subdir/c.txt", "subdir/d.txt", "subdir/subdir2", "subdir/subdir2/e.txt", "subdir/subdir2/f.txt"}
+	b.Run("first", func(b *testing.B) {
+		if err := fstest.TestFS(ar, files...); err != nil {
+			b.Fatal(err)
+		}
+	})
+	b.Run("others", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if err := fstest.TestFS(ar, files...); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
