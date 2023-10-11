@@ -59,6 +59,7 @@ func TestSimple(t *testing.T) {
 			return nil
 		}
 		info, _ := d.Info()
+		// t.Logf("%24q: %s", path, fs.FormatFileInfo(info))
 		t.Logf("%24q: %s %11o %10d %-30s  %s", path, info.Mode(), uint32(info.Mode()), info.Size(), info.ModTime(), info.Name())
 		return nil
 	})
@@ -105,6 +106,7 @@ func TestDir(t *testing.T) {
 			return nil
 		}
 		info, _ := d.Info()
+		// t.Logf("%24q: %s", path, fs.FormatFileInfo(info))
 		t.Logf("%24q: %s %11o %10d %-30s  %s", path, info.Mode(), uint32(info.Mode()), info.Size(), info.ModTime(), info.Name())
 		return nil
 	})
