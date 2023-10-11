@@ -39,6 +39,17 @@ func openFS(t *testing.T, path string, opts ...sqlarfs.Option) fs.FS {
 	return sqlarfs.New(db, opts...)
 }
 
+func TestEmpty(t *testing.T) {
+	ar := openFS(t, "testdata/empty.sqlar", sqlarfs.PermOwner)
+	if err := fstest.TestFS(ar); err != nil {
+		t.Fatal(err)
+	}
+	// Test a second time, without reopening.
+	if err := fstest.TestFS(ar); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSimple(t *testing.T) {
 	ar := openFS(t, "testdata/simple.sqlar", sqlarfs.PermOwner)
 	// ar := os.DirFS("testdata/simple")
