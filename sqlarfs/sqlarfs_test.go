@@ -17,25 +17,26 @@ func TestShowDriver(t *testing.T) {
 	t.Log(sqliteDriver)
 }
 
-func openDB(t *testing.T, path string) *sql.DB {
-	t.Helper()
+func openDB(tb testing.TB, path string) *sql.DB {
+	tb.Helper()
 	db, err := sql.Open(sqliteDriver, path)
 	if err != nil {
-		t.Fatalf("open %q: %v", path, err)
+		tb.Fatalf("open %q: %v", path, err)
 	}
 
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		err := db.Close()
 		if err != nil {
-			t.Error("close archive DB:", err)
+			tb.Error("close archive DB:", err)
 		}
 	})
 
 	return db
 }
 
-func openFS(t *testing.T, path string, opts ...sqlarfs.Option) fs.FS {
-	db := openDB(t, path)
+func openFS(tb testing.TB, path string, opts ...sqlarfs.Option) fs.FS {
+	tb.Helper()
+	db := openDB(tb, path)
 	return sqlarfs.New(db, opts...)
 }
 
