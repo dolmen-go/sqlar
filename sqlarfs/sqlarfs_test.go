@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"io"
 	"io/fs"
+	"runtime"
+	"strconv"
 	"testing"
 	"testing/fstest"
 
@@ -132,4 +134,22 @@ func BenchmarkDir(b *testing.B) {
 			}
 		}
 	})
+}
+
+// go test -run TestDirParallel -race -count=10
+func TestDirParallel(t *testing.T) {
+	ar := openFS(t, "testdata/dir.sqlar", sqlarfs.PermOwner)
+	files := []string{"a.txt", "b.txt", "subdir", "subdir/c.txt", "subdir/d.txt", "subdir/subdir2", "subdir/subdir2/e.txt", "subdir/subdir2/f.txt"}
+
+	nprocs := 2 * runtime.GOMAXPROCS(-1)
+
+	for i := 0; i < nprocs; i++ {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+
+			if err := fstest.TestFS(ar, files...); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
