@@ -89,7 +89,8 @@ func (p PermMask) apply(ar *arfs) {
 
 // fileinfo implements interfaces [fs.FileInfo] and [fs.DirEntry].
 type fileinfo struct {
-	name string
+	rowid uint64
+	name  string
 	// Note: mode is not io/fs.FileMode but instead the Unix S_IF* bits
 	mode  uint32
 	mtime int64
@@ -107,7 +108,7 @@ func (fi *fileinfo) String() string {
 }
 
 func (fi *fileinfo) scan(scan func(dest ...any) error) error {
-	return scan(&fi.name, &fi.mode, &fi.mtime, &fi.sz)
+	return scan(&fi.rowid, &fi.name, &fi.mode, &fi.mtime, &fi.sz)
 }
 
 // Name implements interface [fs.FileInfo].
@@ -219,14 +220,14 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 	nameEsc := escapeLike.Replace(name)
 	rows, err := ar.db.Query(``+
 		// Files
-		`SELECT SUBSTR(name,?),mode,mtime,sz`+
+		`SELECT rowid,SUBSTR(name,?),mode,mtime,sz`+
 		` FROM sqlar`+
 		` WHERE name LIKE ? ESCAPE '`+escapeLikeChar+`'`+
 		` AND name NOT LIKE ? ESCAPE '`+escapeLikeChar+`'`+
 		` AND `+sqlModeFilter+ // Skip files with broken mode
 		` UNION ALL`+
 		// Subdirectories: emulate entries from filenames in subdirs
-		` SELECT DISTINCT SUBSTR(name, ?, INSTR(SUBSTR(name, ?), '/')-1),16749,0,0`+ // mode is: syscall.S_IFDIR | 0555
+		` SELECT DISTINCT 0,SUBSTR(name, ?, INSTR(SUBSTR(name, ?), '/')-1),16749,0,0`+ // mode is: syscall.S_IFDIR | 0555
 		` FROM sqlar`+
 		` WHERE name LIKE ? ESCAPE '`+escapeLikeChar+`'`+
 		` AND name NOT LIKE ? ESCAPE '`+escapeLikeChar+`'`,
@@ -295,6 +296,7 @@ func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 }
 
 var fileinfoRoot = fileinfo{
+	rowid: 0,
 	name:  ".",
 	mode:  dirMode,
 	mtime: 0,
@@ -309,7 +311,7 @@ func (ar *arfs) statRoot() (*fileinfo, error) {
 	}
 	fi = new(fileinfo)
 	err := fi.scan(ar.db.QueryRow(`` +
-		`SELECT '.',mode,mtime,sz` +
+		`SELECT rowid,'.',mode,mtime,sz` +
 		` FROM sqlar` +
 		` WHERE name='.'` +
 		` LIMIT 1`).Scan)
@@ -360,7 +362,7 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 
 	err := info.scan(
 		ar.db.QueryRow(``+
-			`SELECT name,mode,mtime,sz`+
+			`SELECT rowid,name,mode,mtime,sz`+
 			` FROM sqlar`+
 			` WHERE name=?`+
 			` AND `+sqlModeFilter+ // Skip file with broken mode
@@ -406,8 +408,8 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 // *file implements interface [fs.File].
 type file struct {
 	fs   *arfs
-	info fileinfo
 	path string
+	info fileinfo
 	r    io.ReadCloser
 }
 
@@ -437,9 +439,9 @@ func (f *file) Read(b []byte) (int, error) {
 		err := f.fs.db.QueryRow(``+
 			`SELECT data`+
 			` FROM sqlar`+
-			` WHERE name=?`+
+			` WHERE rowid=?`+
 			` AND `+sqlModeFilterReg,
-			f.path,
+			f.info.rowid,
 		).Scan(&buf)
 		switch err {
 		case nil:
