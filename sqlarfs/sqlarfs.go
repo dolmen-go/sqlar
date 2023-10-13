@@ -275,7 +275,11 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 // Stat implements interface [fs.StatFS].
 func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
 	if name == "." {
-		return ar.statRoot(), nil
+		info, err := ar.statRoot()
+		if err != nil {
+			return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
+		}
+		return info, err
 	}
 
 	if !fs.ValidPath(name) {
@@ -297,15 +301,42 @@ var fileinfoRoot = fileinfo{
 	sz:    0,
 }
 
-func (ar *arfs) statRoot() *fileinfo {
-	// FIXME Do a dummy query to ensure the sqlar table is available
-	return &fileinfoRoot
+func (ar *arfs) statRoot() (*fileinfo, error) {
+	var fi *fileinfo
+	fi = ar.dirInfo.load(".")
+	if fi != nil {
+		return fi, nil
+	}
+	fi = new(fileinfo)
+	err := fi.scan(ar.db.QueryRow(`` +
+		`SELECT '.',mode,mtime,sz` +
+		` FROM sqlar` +
+		` WHERE name='.'` +
+		` LIMIT 1`).Scan)
+	switch err {
+	case sql.ErrNoRows:
+		fi = &fileinfoRoot
+		fallthrough
+	case nil:
+		return ar.dirInfo.store(".", fi), nil
+	default:
+		// Table sqlar doesn't exist or other error
+		return nil, err
+	}
 }
 
 // Stat implements interface [fs.StatFS].
 func (ar *arfs) stat(name string) (*fileinfo, error) {
 	dir, filename := filepath.Split(name)
-	if dir != "" {
+	if dir == "" {
+		fi, err := ar.statRoot()
+		if err != nil {
+			return nil, &fs.PathError{Op: "stat", Path: ".", Err: err}
+		}
+		if !ar.canTraverse(fi.mode) {
+			return nil, fs.ErrPermission
+		}
+	} else {
 		// Recursively check that we can traverse the tree
 		// Note: dir has a trailing '/'
 		fi, err := ar.stat(dir[:len(dir)-1])
@@ -471,13 +502,16 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 // Open implements interface [fs.FS].
 func (ar *arfs) Open(name string) (fs.File, error) {
 	var info *fileinfo
+	var err error
 	if name == "." {
-		info = ar.statRoot()
+		info, err = ar.statRoot()
+		if err != nil {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		}
 	} else {
 		if !fs.ValidPath(name) {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 		}
-		var err error
 		info, err = ar.stat(name)
 		if err != nil {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
