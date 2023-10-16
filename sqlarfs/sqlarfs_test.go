@@ -21,7 +21,8 @@ func TestShowDriver(t *testing.T) {
 
 func openDB(tb testing.TB, path string) *sql.DB {
 	tb.Helper()
-	db, err := sql.Open(sqliteDriver, path)
+	// Open the DB in read-only mode for speed
+	db, err := sql.Open(sqliteDriver, "file:"+path+"?mode=ro&immutable=1")
 	if err != nil {
 		tb.Fatalf("open %q: %v", path, err)
 	}

@@ -12,7 +12,8 @@ import (
 )
 
 func Example() {
-	db, err := sql.Open(sqliteDriver, "testdata/simple.sqlar")
+	// Open DB in readonly mode for maximum speed
+	db, err := sql.Open(sqliteDriver, "file:testdata/simple.sqlar?mode=ro&immutable=1")
 	if err != nil {
 		log.Fatal(err)
 	}
