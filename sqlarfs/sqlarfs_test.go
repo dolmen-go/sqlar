@@ -119,15 +119,24 @@ func TestDir(t *testing.T) {
 	}
 }
 
+// BenchmarkDir aims to compare the impact of data caching on the second and others passes of [testing/fstest.TestFS]
+// versus the first pass just after init.
 func BenchmarkDir(b *testing.B) {
-	ar := openFS(b, "testdata/dir.sqlar", sqlarfs.PermOwner)
+	db := openDB(b, "testdata/dir.sqlar")
 	files := []string{"a.txt", "b.txt", "subdir", "subdir/c.txt", "subdir/d.txt", "subdir/subdir2", "subdir/subdir2/e.txt", "subdir/subdir2/f.txt"}
-	b.Run("first", func(b *testing.B) {
-		if err := fstest.TestFS(ar, files...); err != nil {
-			b.Fatal(err)
+	var ar fs.FS
+
+	// Benchmark the sqlarfs init and first pass of fstest.TestFS
+	b.Run("firstTestFS", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			ar = sqlarfs.New(db, sqlarfs.PermOwner)
+			if err := fstest.TestFS(ar, files...); err != nil {
+				b.Fatal(err)
+			}
 		}
 	})
-	b.Run("others", func(b *testing.B) {
+	// Benchmark second and further passes of fstest.TestFS
+	b.Run("othersTestFS", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if err := fstest.TestFS(ar, files...); err != nil {
 				b.Fatal(err)
