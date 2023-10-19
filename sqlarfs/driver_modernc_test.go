@@ -7,5 +7,7 @@ import (
 )
 
 func init() {
-	sqliteDriver = "sqlite"
+	if sqliteDriver == "" {
+		sqliteDriver = "sqlite"
+	}
 }
