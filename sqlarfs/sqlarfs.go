@@ -1,4 +1,4 @@
-// Package sqlarfs provides an implementation of [io/fs.FS] for [SQLite Archive Files].
+// Package sqlarfs provides an implementation of [io/fs.FS] for [SQLite Archive Files] via [database/sql].
 //
 // [SQLite Archive Files]: https://sqlite.org/sqlar.html
 package sqlarfs
@@ -27,7 +27,13 @@ type FS interface {
 
 // New returns an instance of [io/fs.FS] that allows to access the files in an [SQLite Archive File] opened with [database/sql].
 //
-// db is an [sql/database] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
+// db is a [database/sql] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
+// sqlarfs uses caching for the directory structure, and so it assumes
+// that the sqlar table is not modified while browsing the filesystem. So if the sqlar table is modified, create a new instance.
+//
+// For maximum performance, open the SQLite database in read-only, immutable mode:
+//
+//	file:<path>?mode=ro&immutable=1
 //
 // The default permission mask used to enforce file permissions ('mode' column in the 'sqlar' table) is [PermAny].
 //
