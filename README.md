@@ -7,11 +7,18 @@ See https://sqlite.org/sqlar.html
 
 ## Status
 
-v0.2.0 should be production ready.
+[`v0.2.0`](https://pkg.go.dev/github.com/dolmen-go/sqlar@v0.2.0) should be production ready.
 
-The implementation of [sqlarfs](https://pkg.go/dev/github.com/dolmen-go/sqlar/sqlarfs) is quite
-naive so far: the DB is queried on every directory read, without caching. So it is not yet recommended
-for thousands of files, but not yet really tested. Reports of performance issues and use cases are very welcome.
+The implementation of [`sqlarfs`](https://pkg.go/dev/github.com/dolmen-go/sqlar/sqlarfs) is quite
+naive so far:
+  * the DB is queried on every directory read, almost without caching (`v0.2.0`` has only a cache for [FileInfo](https://pkg.go.dev/io/fs.FileInfo) of directory entries).
+  * file data is entirely read in memory on first read of a file.
+  * reading file data is done purely through the SQL layer via the
+    [database/sql](https://pkg.go.dev/database/sql) package. The C implementation of
+    SQLite has a [BLOB API](https://sqlite.org/c3ref/blob_open.html) but we aren't using it.
+
+So it is not yet recommended for thousands of files (but not yet really tested).
+Reports of performance issues and use cases are very welcome.
 
 ## Doc
 
