@@ -2,10 +2,12 @@ package sqlarfs_test
 
 import (
 	"database/sql"
+	"errors"
 	"io"
 	"io/fs"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -162,4 +164,51 @@ func TestDirParallel(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testPerms(t interface {
+	Helper()
+	Run(string, func(*testing.T)) bool
+}, name string, perm sqlarfs.PermMask, files ...string) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		ar := openFS(t, "testdata/perms.sqlar", perm)
+		err := fstest.TestFS(ar, files...)
+
+		// Because of Go issue #63707 we have to filter errors returned by TestFS.
+		// https://github.com/golang/go/issues/63707
+
+		var errs interface{ Unwrap() []error }
+		switch {
+		case err == nil: // ignore
+		case errors.As(err, &errs):
+			for _, err := range errs.Unwrap() {
+				if errors.Is(err, fs.ErrPermission) {
+					t.Logf("%T: %[1]q", err)
+				} else {
+					t.Fatal(err)
+				}
+			}
+		case errors.Is(err, fs.ErrPermission):
+			t.Logf("%T: %[1]q", err)
+		default:
+			// Because of Go issue #63675 we have to dig in the error's message.
+			// https://github.com/golang/go/issues/63675
+			t.Logf("%T: %[1]q", err)
+			t.Log(err.Error())
+			t.Log(fs.ErrPermission.Error())
+			if strings.Contains(err.Error(), fs.ErrPermission.Error()) {
+				t.Logf("%T: %[1]q", err)
+				t.Log("Fallback to error message check")
+				t.Skip("Skip. See https://github.com/golang/go/issues/63675")
+			}
+			t.Fatalf("%T: %[1]q", err)
+		}
+	})
+}
+
+func TestPerms(t *testing.T) {
+	testPerms(t, "PermOwner", sqlarfs.PermOwner, "user", "user/u.txt")
+	testPerms(t, "PermGroup", sqlarfs.PermGroup, "group", "group/g.txt")
+	testPerms(t, "PermOthers", sqlarfs.PermOthers, "others", "others/o.txt")
 }
