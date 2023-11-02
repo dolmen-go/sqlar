@@ -25,6 +25,19 @@ Reports of performance issues and use cases are very welcome.
 Package [github.com/dolmen-go/sqlar/sqlarfs](https://pkg.go.dev/github.com/dolmen-go/sqlar/sqlarfs) implements interface
 [io/fs.FS](https://pkg.go.dev/io/fs#FS).
 
+## Example
+
+Using [`goeval`](https://pkg.go.dev/github.com/dolmen-go/goeval), serve an SQLAr file at https://localhost:8084/ :
+
+<!--
+TODO: use net/http.FileServerFS starting with Go 1.22.
+-->
+
+```console
+$ go install github.com/dolmen-go/goeval@latest
+$ goeval -i net/http -i _=github.com/mattn/go-sqlite3@latest -i github.com/dolmen-go/sqlar/sqlarfs@main 'db,err:=sql.Open("sqlite3","file:"+os.Args[1]+"?mode=ro&immutable=1");if err!=nil{panic(err)};defer db.Close();http.Handle("/",http.FileServer(http.FS(sqlarfs.New(db))));http.ListenAndServe(":8084",nil)' sqlarfs/testdata/dir.sqlar
+```
+
 ## License
 
 Copyright 2023 Olivier Mengué
