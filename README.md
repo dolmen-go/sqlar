@@ -11,7 +11,7 @@ See https://sqlite.org/sqlar.html
 
 The implementation of [`sqlarfs`](https://pkg.go/dev/github.com/dolmen-go/sqlar/sqlarfs) is quite
 naive so far:
-  * the DB is queried on every directory read, almost without caching (`v0.2.0`` has only a cache for [FileInfo](https://pkg.go.dev/io/fs.FileInfo) of directory entries).
+  * the DB is queried on every directory read, almost without caching (`v0.2.0` has only a cache for [FileInfo](https://pkg.go.dev/io/fs.FileInfo) of directory entries).
   * file data is entirely read in memory on first read of a file.
   * reading file data is done purely through the SQL layer via the
     [database/sql](https://pkg.go.dev/database/sql) package. The C implementation of
