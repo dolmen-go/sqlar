@@ -9,7 +9,8 @@ jobs:
       matrix:
         go:
         - stable
-        - oldstable
+        # Go 1.21 is the minimum version supported
+        # - oldstable
     steps:
 
     - name: Check out code
