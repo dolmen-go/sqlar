@@ -199,7 +199,10 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 			return list[i].Name() < list[j].Name()
 		})
 	}
-	return list, err
+	if err != nil {
+		return list, &fs.PathError{Op: "readdir", Path: name, Err: err}
+	}
+	return list, nil
 }
 
 func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
