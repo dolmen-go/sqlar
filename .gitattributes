@@ -1,0 +1,4 @@
+* text=auto
+*.go text
+go.mod text
+go.sum text
