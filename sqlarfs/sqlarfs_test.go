@@ -18,6 +18,9 @@ import (
 var sqliteDriver string
 
 func TestShowDriver(t *testing.T) {
+	if sqliteDriver == "" {
+		t.Fatal("Driver name: ∅")
+	}
 	t.Log("Driver name:", sqliteDriver)
 
 	db := openDB(t, "testdata/empty.sqlar")
@@ -48,6 +51,11 @@ func TestShowDriver(t *testing.T) {
 
 func openDB(tb testing.TB, path string) *sql.DB {
 	tb.Helper()
+
+	if sqliteDriver == "" {
+		tb.Skip("Driver name: ∅")
+	}
+
 	// Open the DB in read-only mode for speed
 	db, err := sql.Open(sqliteDriver, "file:"+path+"?mode=ro&immutable=1")
 	if err != nil {
