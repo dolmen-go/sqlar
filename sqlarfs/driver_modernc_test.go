@@ -1,4 +1,4 @@
-//go:build modernc || (!cgo && !sqlite.ncruces)
+//go:build !sqlite.no.modernc && (sqlite.modernc || (!cgo && !sqlite.ncruces))
 
 package sqlarfs_test
 
@@ -7,7 +7,7 @@ import (
 )
 
 func init() {
-	// go test -v -ldflags="-X github.com/dolmen-go/sqlar/sqlarfs_test.sqliteDriver=sqlite" -tags=modernc
+	// go test -v -ldflags="-X github.com/dolmen-go/sqlar/sqlarfs_test.sqliteDriver=sqlite" -tags=sqlite.modernc
 	if sqliteDriver == "" {
 		sqliteDriver = "sqlite"
 	}

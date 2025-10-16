@@ -1,4 +1,4 @@
-//go:build sqlite.ncruces
+//go:build !sqlite.no.ncruces && (sqlite.ncruces || (!cgo && !(sqlite.no.mattn || sqlite.modernc)))
 
 package sqlarfs_test
 
