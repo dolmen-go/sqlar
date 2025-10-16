@@ -12,7 +12,6 @@ import (
 	"testing/fstest"
 
 	"github.com/dolmen-go/sqlar/sqlarfs"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var sqliteDriver string
