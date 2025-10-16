@@ -36,7 +36,12 @@ func TestShowDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal("db.Conn:", err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Error("Conn.Close:", err)
+		}
+	})
+
 	if err = conn.Raw(func(driverConn any) error {
 		driverConnType := reflect.TypeOf(driverConn)
 		if driverConnType.Kind() == reflect.Pointer {
