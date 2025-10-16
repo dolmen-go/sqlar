@@ -1,4 +1,4 @@
-//go:build !cgo || modernc
+//go:build modernc || (!cgo && !sqlite.ncruces)
 
 package sqlarfs_test
 
