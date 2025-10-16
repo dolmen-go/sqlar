@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,7 +18,32 @@ import (
 var sqliteDriver string
 
 func TestShowDriver(t *testing.T) {
-	t.Log(sqliteDriver)
+	t.Log("Driver name:", sqliteDriver)
+
+	db := openDB(t, "testdata/empty.sqlar")
+
+	driver := db.Driver()
+	driverType := reflect.TypeOf(driver)
+	if driverType.Kind() == reflect.Pointer {
+		driverType = driverType.Elem()
+	}
+	t.Logf("Driver: %s (package: %s)", driverType, driverType.PkgPath())
+
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal("db.Conn:", err)
+	}
+	defer conn.Close()
+	if err = conn.Raw(func(driverConn any) error {
+		driverConnType := reflect.TypeOf(driverConn)
+		if driverConnType.Kind() == reflect.Pointer {
+			driverConnType = driverConnType.Elem()
+		}
+		t.Logf("Conn: %s (package: %s)", driverConnType, driverConnType.PkgPath())
+		return nil
+	}); err != nil {
+		t.Fatal("conn.Raw:", err)
+	}
 }
 
 func openDB(tb testing.TB, path string) *sql.DB {
