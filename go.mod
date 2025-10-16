@@ -3,7 +3,7 @@ module github.com/dolmen-go/sqlar
 go 1.21
 
 require (
-	github.com/mattn/go-sqlite3 v1.14.24
+	github.com/mattn/go-sqlite3 v1.14.32
 	modernc.org/sqlite v1.36.0
 )
 
