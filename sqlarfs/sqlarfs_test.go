@@ -3,6 +3,7 @@ package sqlarfs_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"reflect"
@@ -32,14 +33,16 @@ func TestShowDriver(t *testing.T) {
 	}
 	t.Logf("Driver: %s (package: %s)", driverType, driverType.PkgPath())
 
-	doConn(t, db, func(driverConn any) error {
+	if err := doConnRaw(t, db, func(driverConn any) error {
 		driverConnType := reflect.TypeOf(driverConn)
 		if driverConnType.Kind() == reflect.Pointer {
 			driverConnType = driverConnType.Elem()
 		}
 		t.Logf("Conn: %s (package: %s)", driverConnType, driverConnType.PkgPath())
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func openDB(tb testing.TB, path string) *sql.DB {
@@ -66,30 +69,37 @@ func openDB(tb testing.TB, path string) *sql.DB {
 }
 
 // doConn gets a single private connection to db and runs do() with it.
-func doConn[T any](tb testing.TB, db *sql.DB, do func(T) error) {
+func doConn(tb testing.TB, db *sql.DB, do func(*sql.Conn) error) error {
 	tb.Helper()
 
 	conn, err := db.Conn(tb.Context())
 	if err != nil {
-		tb.Fatal("db.Conn:", err)
+		return fmt.Errorf("db.Conn: %w", err)
 	}
+
 	closeConn := func() {
 		if conn == nil {
 			return
 		}
 		if err := conn.Close(); err != nil {
+			tb.Helper()
 			tb.Error("Conn.Close:", err)
 		}
 		conn = nil
 	}
-	tb.Cleanup(closeConn)
 
-	if err = conn.Raw(func(driverConn any) error {
-		return do(driverConn.(T))
-	}); err != nil {
-		tb.Fatal("conn.Raw:", err)
-	}
-	closeConn()
+	tb.Cleanup(closeConn)
+	defer closeConn()
+	return do(conn)
+}
+
+// doConnRaw gets a single private connection to db and runs do() with the raw connection object.
+func doConnRaw[T any](tb testing.TB, db *sql.DB, do func(T) error) error {
+	return doConn(tb, db, func(conn *sql.Conn) error {
+		return conn.Raw(func(driverConn any) error {
+			return do(driverConn.(T))
+		})
+	})
 }
 
 func openFS(tb testing.TB, path string, opts ...sqlarfs.Option) fs.FS {
