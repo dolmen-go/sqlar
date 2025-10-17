@@ -32,26 +32,14 @@ func TestShowDriver(t *testing.T) {
 	}
 	t.Logf("Driver: %s (package: %s)", driverType, driverType.PkgPath())
 
-	conn, err := db.Conn(t.Context())
-	if err != nil {
-		t.Fatal("db.Conn:", err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(); err != nil {
-			t.Error("Conn.Close:", err)
-		}
-	})
-
-	if err = conn.Raw(func(driverConn any) error {
+	doConn(t, db, func(driverConn any) error {
 		driverConnType := reflect.TypeOf(driverConn)
 		if driverConnType.Kind() == reflect.Pointer {
 			driverConnType = driverConnType.Elem()
 		}
 		t.Logf("Conn: %s (package: %s)", driverConnType, driverConnType.PkgPath())
 		return nil
-	}); err != nil {
-		t.Fatal("conn.Raw:", err)
-	}
+	})
 }
 
 func openDB(tb testing.TB, path string) *sql.DB {
@@ -75,6 +63,33 @@ func openDB(tb testing.TB, path string) *sql.DB {
 	})
 
 	return db
+}
+
+// doConn gets a single private connection to db and runs do() with it.
+func doConn[T any](tb testing.TB, db *sql.DB, do func(T) error) {
+	tb.Helper()
+
+	conn, err := db.Conn(tb.Context())
+	if err != nil {
+		tb.Fatal("db.Conn:", err)
+	}
+	closeConn := func() {
+		if conn == nil {
+			return
+		}
+		if err := conn.Close(); err != nil {
+			tb.Error("Conn.Close:", err)
+		}
+		conn = nil
+	}
+	tb.Cleanup(closeConn)
+
+	if err = conn.Raw(func(driverConn any) error {
+		return do(driverConn.(T))
+	}); err != nil {
+		tb.Fatal("conn.Raw:", err)
+	}
+	closeConn()
 }
 
 func openFS(tb testing.TB, path string, opts ...sqlarfs.Option) fs.FS {
