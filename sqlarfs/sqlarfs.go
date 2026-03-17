@@ -22,6 +22,7 @@ type FS interface {
 	fs.FS
 	fs.StatFS
 	fs.ReadDirFS
+	fs.ReadLinkFS
 }
 
 // Rows is the interface of [*database/sql.Rows].
@@ -162,6 +163,8 @@ func (fi *fileinfo) Mode() fs.FileMode {
 	switch fi.mode & syscall.S_IFMT {
 	case syscall.S_IFDIR:
 		mode |= fs.ModeDir
+	case syscall.S_IFLNK:
+		mode |= fs.ModeSymlink
 	case syscall.S_IFREG:
 		// Do nothing
 	}
@@ -323,10 +326,27 @@ func (ar *arfs[_]) Stat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
 
-	fi, err := ar.stat(name)
+	_, fi, err := ar.resolve(name)
 	if err != nil {
 		// Avoid returning (*fileinfo)(nil) instead of (fs.FileInfo)(nil)
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
+	}
+	return fi, nil
+}
+
+// Lstat implements interface [fs.ReadLinkFS].
+func (ar *arfs[_]) Lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return ar.Stat(name)
+	}
+
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrInvalid}
+	}
+
+	fi, err := ar.stat(name)
+	if err != nil {
+		return nil, &fs.PathError{Op: "lstat", Path: name, Err: err}
 	}
 	return fi, nil
 }
@@ -364,7 +384,8 @@ func (ar *arfs[_]) statRoot() (*fileinfo, error) {
 	return ar.dirInfo.store(".", fi), nil
 }
 
-// Stat implements interface [fs.StatFS].
+// stat returns the [fileinfo] of the entry named name.
+// It doesn't follow symlinks.
 func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
 	dir, filename := path.Split(name)
 	if dir == "" {
@@ -433,6 +454,31 @@ func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
 		info = ar.dirInfo.store(name, info)
 	}
 	return info, nil
+}
+
+func (ar *arfs[_]) resolve(name string) (string, *fileinfo, error) {
+	const maxSymlinks = 10
+	currPath := name
+	for i := 0; i < maxSymlinks; i++ {
+		fi, err := ar.stat(currPath)
+		if err != nil {
+			return "", nil, err
+		}
+		if fi.mode&syscall.S_IFMT != syscall.S_IFLNK {
+			return currPath, fi, nil
+		}
+
+		target, err := ar.ReadLink(currPath)
+		if err != nil {
+			return "", nil, err
+		}
+		target = path.Clean(path.Join(path.Dir(currPath), target))
+		if !fs.ValidPath(target) {
+			return "", nil, &fs.PathError{Op: "readlink", Path: currPath, Err: fs.ErrInvalid}
+		}
+		currPath = target
+	}
+	return "", nil, fmt.Errorf("too many symlinks")
 }
 
 // file gives access to a file in an SQLite Archive file.
@@ -532,12 +578,57 @@ func (d *dir[_]) ReadDir(n int) ([]fs.DirEntry, error) {
 	return e, nil
 }
 
+// ReadLink implements interface [fs.ReadLinkFS].
+func (ar *arfs[_]) ReadLink(name string) (string, error) {
+	if !fs.ValidPath(name) {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+	}
+	info, err := ar.stat(name)
+	if err != nil {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: err}
+	}
+	if info.mode&syscall.S_IFMT != syscall.S_IFLNK {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+	}
+	if !ar.canRead(info.mode) {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrPermission}
+	}
+
+	var target string
+	hasRow, err := ar.queryRow(``+
+		`SELECT data`+
+		` FROM sqlar`+
+		` WHERE name=?`,
+		[]any{name},
+		[]any{&target},
+	)
+	if err != nil {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: err}
+	}
+	if !hasRow {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrNotExist}
+	}
+
+	if strings.HasPrefix(target, "/") {
+		// Absolute paths in archives are not allowed
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+	}
+	p := path.Clean(path.Join(path.Dir(name), target))
+	if !fs.ValidPath(p) {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+	}
+
+	return target, nil
+}
+
 // Open implements interface [fs.FS].
 func (ar *arfs[R]) Open(name string) (fs.File, error) {
 	var info *fileinfo
+	var path string
 	var err error
 	if name == "." {
 		info, err = ar.statRoot()
+		path = "."
 		if err != nil {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
@@ -545,15 +636,15 @@ func (ar *arfs[R]) Open(name string) (fs.File, error) {
 		if !fs.ValidPath(name) {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 		}
-		info, err = ar.stat(name)
+		path, info, err = ar.resolve(name)
 		if err != nil {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
 	}
 
 	if info.IsDir() {
-		return &dir[R]{file: file[R]{fs: ar, info: *info, path: name}}, nil
+		return &dir[R]{file: file[R]{fs: ar, info: *info, path: path}}, nil
 	}
 
-	return &file[R]{fs: ar, info: *info, path: name}, nil
+	return &file[R]{fs: ar, info: *info, path: path}, nil
 }
