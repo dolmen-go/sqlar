@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -336,7 +336,7 @@ func (ar *arfs) statRoot() (*fileinfo, error) {
 
 // Stat implements interface [fs.StatFS].
 func (ar *arfs) stat(name string) (*fileinfo, error) {
-	dir, filename := filepath.Split(name)
+	dir, filename := path.Split(name)
 	if dir == "" {
 		fi, err := ar.statRoot()
 		if err != nil {
