@@ -6,6 +6,7 @@ package sqlarfs
 import (
 	"bytes"
 	"compress/flate"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -176,6 +177,10 @@ func (fi *fileinfo) IsDir() bool {
 	return fi.mode&syscall.S_IFDIR != 0
 }
 
+func (fi *fileinfo) isSymlink() bool {
+	return fi.mode&syscall.S_IFMT == syscall.S_IFLNK
+}
+
 // ModTime implements interface [fs.FileInfo].
 func (fi *fileinfo) ModTime() time.Time {
 	return time.Unix(fi.mtime, 0)
@@ -243,7 +248,7 @@ func (ar *arfs[_]) readDir(name string) ([]fs.DirEntry, error) {
 	if name == "." {
 		name = ""
 	} else {
-		fi, err := ar.stat(name)
+		resolved, fi, err := ar.resolve(name)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +258,7 @@ func (ar *arfs[_]) readDir(name string) ([]fs.DirEntry, error) {
 		if !ar.canRead(fi.mode) {
 			return nil, fs.ErrPermission
 		}
-		name = name + "/"
+		name = resolved + "/"
 	}
 
 	nameEsc := escapeLike.Replace(name)
@@ -326,10 +331,10 @@ func (ar *arfs[_]) Stat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
 
-	_, fi, err := ar.resolve(name)
+	resolved, fi, err := ar.resolve(name)
 	if err != nil {
 		// Avoid returning (*fileinfo)(nil) instead of (fs.FileInfo)(nil)
-		return nil, &fs.PathError{Op: "stat", Path: name, Err: err}
+		return nil, &fs.PathError{Op: "stat", Path: resolved, Err: err}
 	}
 	return fi, nil
 }
@@ -344,7 +349,7 @@ func (ar *arfs[_]) Lstat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrInvalid}
 	}
 
-	fi, err := ar.stat(name)
+	_, fi, err := ar.lstat(name)
 	if err != nil {
 		return nil, &fs.PathError{Op: "lstat", Path: name, Err: err}
 	}
@@ -384,36 +389,44 @@ func (ar *arfs[_]) statRoot() (*fileinfo, error) {
 	return ar.dirInfo.store(".", fi), nil
 }
 
-// stat returns the [fileinfo] of the entry named name.
-// It doesn't follow symlinks.
-func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
+// lstat returns the resolved path and [fileinfo] of the entry named name.
+// It doesn't follow symlinks for the last component of the path,
+// but it DOES follow symlinks for parent directory components.
+func (ar *arfs[_]) lstat(name string) (string, *fileinfo, error) {
 	dir, filename := path.Split(name)
+	var resolvedPath string
 	if dir == "" {
 		fi, err := ar.statRoot()
 		if err != nil {
-			return nil, &fs.PathError{Op: "stat", Path: ".", Err: err}
+			return "", nil, err
 		}
 		if !ar.canTraverse(fi.mode) {
-			return nil, fs.ErrPermission
+			return "", nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrPermission}
 		}
+		resolvedPath = filename
 	} else {
-		// Recursively check that we can traverse the tree
+		// Recursively check that we can traverse the tree.
 		// Note: dir has a trailing '/'
-		fi, err := ar.stat(dir[:len(dir)-1])
+		dirPath := dir[:len(dir)-1]
+		resolvedDir, fi, err := ar.resolve(dirPath)
 		if err != nil {
-			return nil, &fs.PathError{Op: "stat", Path: dir[:len(dir)-1], Err: err}
+			return "", nil, err
 		}
 		if !fi.IsDir() {
-			return nil, fs.ErrNotExist
+			return "", nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 		}
 		if !ar.canTraverse(fi.mode) {
-			return nil, fs.ErrPermission
+			return "", nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrPermission}
+		}
+		resolvedPath = filename
+		if resolvedDir != "." {
+			resolvedPath = resolvedDir + "/" + filename
 		}
 	}
 
-	info := ar.dirInfo.load(name)
+	info := ar.dirInfo.load(resolvedPath)
 	if info != nil {
-		return info, nil
+		return resolvedPath, info, nil
 	}
 
 	info = new(fileinfo)
@@ -424,11 +437,11 @@ func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
 		` WHERE name=?`+
 		` AND `+sqlModeFilter+ // Skip file with broken mode
 		` LIMIT 1`,
-		[]any{name},
+		[]any{resolvedPath},
 		info.scanners(),
 	)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if !hasRow {
 		// Emulate directories like in ReadDir
@@ -438,47 +451,51 @@ func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
 			` FROM sqlar`+
 			` WHERE SUBSTR(name,?)=?`+
 			` LIMIT 1`,
-			[]any{len(name) + 1, name + "/"},
+			[]any{len(resolvedPath) + 1, resolvedPath + "/"},
 			[]any{&ok},
 		)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		if !hasRow {
-			return nil, fs.ErrNotExist
+			return "", nil, fs.ErrNotExist
 		}
 		info.mode = dirMode
 	}
 	info.name = filename
 	if info.IsDir() {
-		info = ar.dirInfo.store(name, info)
+		info = ar.dirInfo.store(resolvedPath, info)
 	}
-	return info, nil
+
+	return resolvedPath, info, nil
 }
 
 func (ar *arfs[_]) resolve(name string) (string, *fileinfo, error) {
 	const maxSymlinks = 10
-	currPath := name
 	for i := 0; i < maxSymlinks; i++ {
-		fi, err := ar.stat(currPath)
+		resolved, fi, err := ar.lstat(name)
 		if err != nil {
-			return "", nil, err
+			return name, nil, err
 		}
-		if fi.mode&syscall.S_IFMT != syscall.S_IFLNK {
-			return currPath, fi, nil
+		if !fi.isSymlink() {
+			return resolved, fi, nil
 		}
 
-		target, err := ar.ReadLink(currPath)
+		target, err := ar.ReadLink(resolved)
 		if err != nil {
 			return "", nil, err
 		}
-		target = path.Clean(path.Join(path.Dir(currPath), target))
-		if !fs.ValidPath(target) {
-			return "", nil, &fs.PathError{Op: "readlink", Path: currPath, Err: fs.ErrInvalid}
+		// A symlink pointing to "." links to the directory that contains it.
+		name = path.Clean(path.Join(path.Dir(resolved), target))
+		if name == "." {
+			fi, err = ar.statRoot()
+			return ".", fi, err
 		}
-		currPath = target
+		if !fs.ValidPath(name) {
+			return resolved, nil, fs.ErrInvalid
+		}
 	}
-	return "", nil, fmt.Errorf("too many symlinks")
+	return "", nil, errors.New("too many symlinks")
 }
 
 // file gives access to a file in an SQLite Archive file.
@@ -502,6 +519,24 @@ type dir[R Rows] struct {
 // Stat implements interface [fs.File].
 func (f *file[_]) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
+}
+
+func (ar *arfs[_]) readFileData(name string, out any) error {
+	hasRow, err := ar.queryRow(``+
+		`SELECT data`+
+		` FROM sqlar`+
+		` WHERE name=?`,
+		[]any{name},
+		[]any{out},
+	)
+
+	if err != nil {
+		return err
+	}
+	if !hasRow {
+		return fs.ErrNotExist
+	}
+	return nil
 }
 
 // Read implements interface [fs.File].
@@ -583,52 +618,43 @@ func (ar *arfs[_]) ReadLink(name string) (string, error) {
 	if !fs.ValidPath(name) {
 		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
 	}
-	info, err := ar.stat(name)
+	resolved, info, err := ar.lstat(name)
 	if err != nil {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: err}
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: err}
 	}
-	if info.mode&syscall.S_IFMT != syscall.S_IFLNK {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+	if !info.isSymlink() {
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: fs.ErrInvalid}
 	}
 	if !ar.canRead(info.mode) {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrPermission}
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: fs.ErrPermission}
 	}
 
-	var target string
-	hasRow, err := ar.queryRow(``+
-		`SELECT data`+
-		` FROM sqlar`+
-		` WHERE name=?`,
-		[]any{name},
-		[]any{&target},
-	)
+	var target *string
+	err = ar.readFileData(resolved, &target)
 	if err != nil {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: err}
-	}
-	if !hasRow {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrNotExist}
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: err}
 	}
 
-	if strings.HasPrefix(target, "/") {
+	if target == nil || strings.HasPrefix(*target, "/") {
 		// Absolute paths in archives are not allowed
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: fs.ErrInvalid}
 	}
-	p := path.Clean(path.Join(path.Dir(name), target))
+	p := path.Clean(path.Join(path.Dir(name), *target))
 	if !fs.ValidPath(p) {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
+		return "", &fs.PathError{Op: "readlink", Path: resolved, Err: fs.ErrInvalid}
 	}
 
-	return target, nil
+	return *target, nil
 }
 
 // Open implements interface [fs.FS].
 func (ar *arfs[R]) Open(name string) (fs.File, error) {
 	var info *fileinfo
-	var path string
+	var resolved string
 	var err error
 	if name == "." {
 		info, err = ar.statRoot()
-		path = "."
+		resolved = "."
 		if err != nil {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
@@ -636,15 +662,15 @@ func (ar *arfs[R]) Open(name string) (fs.File, error) {
 		if !fs.ValidPath(name) {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 		}
-		path, info, err = ar.resolve(name)
+		resolved, info, err = ar.resolve(name)
 		if err != nil {
 			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
 		}
 	}
 
 	if info.IsDir() {
-		return &dir[R]{file: file[R]{fs: ar, info: *info, path: path}}, nil
+		return &dir[R]{file: file[R]{fs: ar, info: *info, path: resolved}}, nil
 	}
 
-	return &file[R]{fs: ar, info: *info, path: path}, nil
+	return &file[R]{fs: ar, info: *info, path: resolved}, nil
 }

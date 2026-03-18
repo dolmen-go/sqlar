@@ -198,6 +198,10 @@ func TestSymlink(t *testing.T) {
 		targetMtime = 1424862399 // "Wed Feb 25 11:06:39 PST 2015"
 		linkName    = "foo.lnk"
 		link2Name   = "bar.lnk"
+		dirName     = "subdir"
+		dirPath     = dirName
+		dirLinkName = "dir.lnk"
+		dirLinkPath = dirLinkName
 	)
 
 	dbPath := filepath.Join(t.TempDir(), "test.sqlar")
@@ -243,14 +247,45 @@ func TestSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	links := map[string]string{
-		linkName:  targetName,
-		link2Name: linkName,
+	// Add a directory
+	_, err = stmt.Exec(dirName, 040555, targetMtime, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a file in the directory
+	const (
+		fileInDirPath = dirPath + "/baz.txt"
+		fileInDirData = "baz"
+	)
+	_, err = stmt.Exec(fileInDirPath, 0100644, targetMtime, len(fileInDirData), []byte(fileInDirData))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a symlink to directory: dirLinkName -> dirName
+	_, err = stmt.Exec(dirLinkName, 0120777, targetMtime, len(dirName), []byte(dirName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a relative symlink: relLinkPath -> ../linkName
+	const (
+		relLinkName   = "foo-in-subdir.lnk"
+		relLinkPath   = dirPath + "/" + relLinkName
+		relLinkTarget = "../" + link2Name
+
+		relDirLinkPath = dirLinkPath + "/" + relLinkName
+	)
+	_, err = stmt.Exec(relLinkPath, 0120777, targetMtime, len(relLinkTarget), []byte(relLinkTarget))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	ar := sqlarfs.New(db.Query)
 
-	for _, name := range []string{linkName, link2Name} {
+	// Resolution checks for direct and chained links to file
+	for _, name := range []string{linkName, link2Name, relLinkPath, relDirLinkPath} {
 		fi, err := ar.Stat(name)
 		if err != nil {
 			t.Fatalf("Stat(%s) failed: %v", name, err)
@@ -269,14 +304,6 @@ func TestSymlink(t *testing.T) {
 			t.Errorf("expected mtime %d, got %d for %s", targetMtime, fi.ModTime().Unix(), name)
 		}
 
-		// Check ReadLink
-		target, err := ar.ReadLink(name)
-		if err != nil {
-			t.Errorf("ReadLink(%s) failed: %v", name, err)
-		} else if target != links[name] {
-			t.Errorf("expected target %s, got %q for %s", links[name], target, name)
-		}
-
 		// Check Lstat
 		fi, err = ar.Lstat(name)
 		if err != nil {
@@ -286,7 +313,7 @@ func TestSymlink(t *testing.T) {
 			t.Errorf("expected ModeSymlink to be set in Lstat(%s)", name)
 		}
 		if fi.Name() != path.Base(name) {
-			t.Errorf("expected Name to be set in Lstat(%s)", path.Base(name))
+			t.Errorf("expected Name to be %s, got %s for Lstat(%s)", path.Base(name), fi.Name(), name)
 		}
 
 		// In SQLite Archives, following a symlink for reading returns the target content.
@@ -303,12 +330,63 @@ func TestSymlink(t *testing.T) {
 		}
 	}
 
+	// Check ReadLink specifically for each link
+	links := map[string]string{
+		linkName:       targetName,
+		link2Name:      linkName,
+		dirLinkName:    dirName,
+		relLinkPath:    relLinkTarget,
+		relDirLinkPath: relLinkTarget, // same as relLinkPath but via dirLinkName link
+	}
+	for src, expected := range links {
+		target, err := ar.ReadLink(src)
+		if err != nil {
+			t.Errorf("ReadLink(%s) failed: %v", src, err)
+		} else if target != expected {
+			t.Errorf("expected target %s, got %q for %s", expected, target, src)
+		}
+	}
+
+	// Check directory symlink resolution
+	fi, err := ar.Stat(dirLinkName)
+	if err != nil {
+		t.Fatalf("Stat(%s) failed: %v", dirLinkName, err)
+	}
+	if !fi.IsDir() {
+		t.Errorf("expected %s to be resolved to a directory", dirLinkName)
+	}
+
+	// Check reading through directory symlink
+	f, err := ar.Open(fileInDirPath)
+	if err != nil {
+		t.Fatalf("Open(%s) failed: %v", fileInDirPath, err)
+	}
+	content, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		t.Errorf("Read(%s) failed: %v", fileInDirPath, err)
+	} else if string(content) != fileInDirData {
+		t.Errorf("expected content %q, got %q", fileInDirData, string(content))
+	}
+
+	// Check relative symlink resolution
+	fi, err = ar.Stat(relLinkPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) failed: %v", relLinkPath, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		t.Errorf("expected %s to be resolved", relLinkPath)
+	}
+	if fi.Size() != int64(len(targetData)) {
+		t.Errorf("expected size %d, got %d for %s", len(targetData), fi.Size(), relLinkPath)
+	}
+
 	// Check ReadDir
 	entries, err := fs.ReadDir(ar, ".")
 	if err != nil {
 		t.Fatalf("ReadDir failed: %v", err)
 	}
-	for _, name := range []string{linkName, link2Name} {
+	for _, name := range []string{linkName, link2Name, dirLinkName} {
 		found := false
 		for _, e := range entries {
 			if e.Name() == name {
@@ -323,7 +401,7 @@ func TestSymlink(t *testing.T) {
 		}
 	}
 
-	if err := fstest.TestFS(ar, targetName, linkName, link2Name); err != nil {
+	if err := fstest.TestFS(ar, targetName, linkName, link2Name, dirName, fileInDirPath, dirLinkName, relLinkPath); err != nil {
 		t.Fatal(err)
 	}
 }
