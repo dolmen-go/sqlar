@@ -25,6 +25,25 @@ type FS interface {
 	fs.ReadDirFS
 }
 
+// Row is the interface of [*database/sql.Row].
+type Row interface {
+	Scan(...any) error
+	Err() error
+}
+
+// Row is the interface of [*database/sql.Rows].
+type Rows interface {
+	Row
+	Next() bool
+	Close() error
+}
+
+// Row is a subset of methods of [*database/sql.DB].
+type DB[R Row, RR Rows] interface {
+	QueryRow(q string, _ ...any) R
+	Query(q string, _ ...any) (RR, error)
+}
+
 // New returns an instance of [io/fs.FS] that allows to access the files in an [SQLite Archive File] opened with [database/sql].
 //
 // db is a [database/sql] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
@@ -38,30 +57,30 @@ type FS interface {
 // The default permission mask used to enforce file permissions ('mode' column in the 'sqlar' table) is [PermAny].
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
-func New(db *sql.DB, opts ...Option) FS {
-	ar := &arfs{db: db, permMask: PermAny}
+func New[RowT Row, RowsT Rows, DBT DB[RowT, RowsT]](db DBT, opts ...Option) FS {
+	ar := &arfs[RowT, RowsT, DBT]{db: db, permMask: PermAny}
 	for _, o := range opts {
 		o.apply(&ar.permMask)
 	}
 	return ar
 }
 
-type arfs struct {
-	db       *sql.DB
+type arfs[RowT Row, RowsT Rows, DBT DB[RowT, RowsT]] struct {
+	db       DBT
 	permMask PermMask
 
 	dirInfo dirInfoCache
 }
 
-func (ar *arfs) canRead(mode uint32) bool {
+func (ar *arfs[_, _, _]) canRead(mode uint32) bool {
 	return mode&0444&uint32(ar.permMask) != 0
 }
 
-func (ar *arfs) canTraverse(mode uint32) bool {
+func (ar *arfs[_, _, _]) canTraverse(mode uint32) bool {
 	return mode&0111&uint32(ar.permMask) != 0
 }
 
-var _ FS = (*arfs)(nil)
+var _ FS = (*arfs[Row, Rows, DB[Row, Rows]])(nil)
 
 // Option is an option for [New].
 //
@@ -192,7 +211,7 @@ const (
 	sqlModeFilterReg        = `(mode&32768)<>0`      // 32768 = syscall.S_IFREG => regular files
 )
 
-func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
+func (ar *arfs[_, _, _]) ReadDir(name string) ([]fs.DirEntry, error) {
 	list, err := ar.readDir(name)
 	if len(list) > 0 {
 		sort.Slice(list, func(i, j int) bool {
@@ -205,7 +224,7 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	return list, nil
 }
 
-func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
+func (ar *arfs[_, _, _]) readDir(name string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
 	}
@@ -282,7 +301,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 }
 
 // Stat implements interface [fs.StatFS].
-func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
+func (ar *arfs[_, _, _]) Stat(name string) (fs.FileInfo, error) {
 	if name == "." {
 		info, err := ar.statRoot()
 		if err != nil {
@@ -310,7 +329,7 @@ var fileinfoRoot = fileinfo{
 	sz:    0,
 }
 
-func (ar *arfs) statRoot() (*fileinfo, error) {
+func (ar *arfs[_, _, _]) statRoot() (*fileinfo, error) {
 	var fi *fileinfo
 	fi = ar.dirInfo.load(".")
 	if fi != nil {
@@ -335,7 +354,7 @@ func (ar *arfs) statRoot() (*fileinfo, error) {
 }
 
 // Stat implements interface [fs.StatFS].
-func (ar *arfs) stat(name string) (*fileinfo, error) {
+func (ar *arfs[_, _, _]) stat(name string) (*fileinfo, error) {
 	dir, filename := path.Split(name)
 	if dir == "" {
 		fi, err := ar.statRoot()
@@ -413,8 +432,8 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 // file gives access to a file in an SQLite Archive file.
 //
 // *file implements interface [fs.File].
-type file struct {
-	fs   *arfs
+type file[RowT Row, RowsT Rows, DBT DB[RowT, RowsT]] struct {
+	fs   *arfs[RowT, RowsT, DBT]
 	info fileinfo
 	path string
 	r    io.ReadCloser
@@ -423,18 +442,18 @@ type file struct {
 // dir gives access to a directory in an SQLite Archive file.
 //
 // *dir implements interface [fs.ReadDirFile].
-type dir struct {
-	file
+type dir[RowT Row, RowsT Rows, DBT DB[RowT, RowsT]] struct {
+	file[RowT, RowsT, DBT]
 	entries []fs.DirEntry
 }
 
 // Stat implements interface [fs.File].
-func (f *file) Stat() (fs.FileInfo, error) {
+func (f *file[_, _, _]) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
 }
 
 // Read implements interface [fs.File].
-func (f *file) Read(b []byte) (int, error) {
+func (f *file[_, _, _]) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrClosed}
@@ -468,7 +487,7 @@ func (f *file) Read(b []byte) (int, error) {
 }
 
 // Close implements interface [fs.File].
-func (f *file) Close() error {
+func (f *file[_, _, _]) Close() error {
 	r := f.r
 	f.fs, f.r = nil, nil
 	if r == nil {
@@ -478,7 +497,7 @@ func (f *file) Close() error {
 }
 
 // ReadDir implements interface [fs.ReadDirFile].
-func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
+func (d *dir[_, _, _]) ReadDir(n int) ([]fs.DirEntry, error) {
 	if d.file.fs == nil {
 		return nil, fs.ErrClosed
 	}
@@ -509,7 +528,7 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 }
 
 // Open implements interface [fs.FS].
-func (ar *arfs) Open(name string) (fs.File, error) {
+func (ar *arfs[Row, Rows, DB]) Open(name string) (fs.File, error) {
 	var info *fileinfo
 	var err error
 	if name == "." {
@@ -528,8 +547,8 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 	}
 
 	if info.IsDir() {
-		return &dir{file: file{fs: ar, info: *info, path: name}}, nil
+		return &dir[Row, Rows, DB]{file: file[Row, Rows, DB]{fs: ar, info: *info, path: name}}, nil
 	}
 
-	return &file{fs: ar, info: *info, path: name}, nil
+	return &file[Row, Rows, DB]{fs: ar, info: *info, path: name}, nil
 }
