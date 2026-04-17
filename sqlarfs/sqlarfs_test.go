@@ -18,6 +18,10 @@ import (
 
 var sqliteDriver string
 
+func init() {
+	sqlarfs.ErrNoRows = sql.ErrNoRows
+}
+
 func TestShowDriver(t *testing.T) {
 	if sqliteDriver == "" {
 		t.Fatal("Driver name: ∅")

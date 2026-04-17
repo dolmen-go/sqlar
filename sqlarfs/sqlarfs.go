@@ -6,7 +6,6 @@ package sqlarfs
 import (
 	"bytes"
 	"compress/flate"
-	"database/sql"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,20 +24,23 @@ type FS interface {
 	fs.ReadDirFS
 }
 
+// ErrNoRows must be set to the signal value returned by [database/sql.Row.Scan], so usually [database/sql.ErrNoRows].
+var ErrNoRows error
+
 // Row is the interface of [*database/sql.Row].
 type Row interface {
 	Scan(...any) error
 	Err() error
 }
 
-// Row is the interface of [*database/sql.Rows].
+// Rows is the interface of [*database/sql.Rows].
 type Rows interface {
 	Row
 	Next() bool
 	Close() error
 }
 
-// Row is a subset of methods of [*database/sql.DB].
+// DB is a subset of methods of [*database/sql.DB].
 type DB[R Row, RR Rows] interface {
 	QueryRow(q string, _ ...any) R
 	Query(q string, _ ...any) (RR, error)
@@ -58,6 +60,9 @@ type DB[R Row, RR Rows] interface {
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
 func New[RowT Row, RowsT Rows, DBT DB[RowT, RowsT]](db DBT, opts ...Option) FS {
+	if ErrNoRows == nil {
+		panic("sqlarfs.ErrNoRows must be set")
+	}
 	ar := &arfs[RowT, RowsT, DBT]{db: db, permMask: PermAny}
 	for _, o := range opts {
 		o.apply(&ar.permMask)
@@ -342,7 +347,7 @@ func (ar *arfs[_, _, _]) statRoot() (*fileinfo, error) {
 		` WHERE name='.'` +
 		` LIMIT 1`).Scan)
 	switch err {
-	case sql.ErrNoRows:
+	case ErrNoRows:
 		fi = &fileinfoRoot
 		fallthrough
 	case nil:
@@ -398,7 +403,7 @@ func (ar *arfs[_, _, _]) stat(name string) (*fileinfo, error) {
 	switch err {
 	case nil:
 		// OK
-	case sql.ErrNoRows:
+	case ErrNoRows:
 		// Emulate directories like in ReadDir
 		var ok bool
 		err = ar.db.QueryRow(``+
@@ -412,7 +417,7 @@ func (ar *arfs[_, _, _]) stat(name string) (*fileinfo, error) {
 		switch {
 		case err == nil && ok:
 			info.mode = dirMode
-		case err == sql.ErrNoRows || err == nil: // Case "err == nil" should never happen
+		case err == ErrNoRows || err == nil: // Case "err == nil" should never happen
 			return nil, fs.ErrNotExist
 		default:
 			return nil, err
@@ -472,7 +477,7 @@ func (f *file[_, _, _]) Read(b []byte) (int, error) {
 		switch err {
 		case nil:
 			// OK
-		case sql.ErrNoRows:
+		case ErrNoRows:
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
 		default:
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: err}
