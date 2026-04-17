@@ -275,7 +275,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 		entries = append(entries, fs.FileInfoToDirEntry(fi))
 	}
 
-	if err := rows.Err(); err != err {
+	if err := rows.Err(); err != nil {
 		return entries, err
 	}
 	return entries, rows.Close()
