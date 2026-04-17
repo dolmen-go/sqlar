@@ -41,7 +41,7 @@ type FS interface {
 func New(db *sql.DB, opts ...Option) FS {
 	ar := &arfs{db: db, permMask: PermAny}
 	for _, o := range opts {
-		o.apply(ar)
+		o.apply(&ar.permMask)
 	}
 	return ar
 }
@@ -67,7 +67,7 @@ var _ FS = (*arfs)(nil)
 //
 // Available options: [PermOwner], [PermGroup], [PermOthers], [PermAny].
 type Option interface {
-	apply(*arfs)
+	apply(*PermMask)
 }
 
 const (
@@ -83,11 +83,11 @@ const (
 // PermMask is an [Option] for [New].
 type PermMask uint32
 
-func (p PermMask) apply(ar *arfs) {
+func (p PermMask) apply(permMask *PermMask) {
 	switch p {
 	// We do not accept any other values than the constants
 	case PermOwner, PermGroup, PermOthers, PermAny:
-		ar.permMask = p
+		*permMask = p
 	default:
 		panic(fmt.Errorf("sqlar.New: invalid permission mask value"))
 	}
