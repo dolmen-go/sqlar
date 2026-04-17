@@ -20,7 +20,7 @@ func Example() {
 	defer db.Close()
 
 	// List files in the archive, recusively
-	ar := sqlarfs.New(db, sqlarfs.PermOwner)
+	ar := sqlarfs.New(db.Query, sqlarfs.PermOwner)
 	fs.WalkDir(ar, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

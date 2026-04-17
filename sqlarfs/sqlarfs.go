@@ -6,7 +6,6 @@ package sqlarfs
 import (
 	"bytes"
 	"compress/flate"
-	"database/sql"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,9 +24,21 @@ type FS interface {
 	fs.ReadDirFS
 }
 
+// Rows is the interface of [*database/sql.Rows].
+type Rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close() error
+}
+
+// QueryRowsFunc is the type of the function used to query rows in the database, like [database/sql.DB.Query].
+type QueryRowsFunc[R Rows] = func(query string, args ...any) (R, error)
+
 // New returns an instance of [io/fs.FS] that allows to access the files in an [SQLite Archive File] opened with [database/sql].
 //
-// db is a [database/sql] handle to the SQLite Archive file. Two drivers are known to work: [github.com/mattn/sqlite3] and [modernc.org/sqlite].
+// queryRows allows to run an SQL query in the SQLite Archive file. See [database/sql.DB.Query] for an example of such a function.
+//
 // sqlarfs uses caching for the directory structure, and so it assumes
 // that the sqlar table is not modified while browsing the filesystem. So if the sqlar table is modified, create a new instance.
 //
@@ -38,30 +49,46 @@ type FS interface {
 // The default permission mask used to enforce file permissions ('mode' column in the 'sqlar' table) is [PermAny].
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
-func New(db *sql.DB, opts ...Option) FS {
-	ar := &arfs{db: db, permMask: PermAny}
+func New[R Rows](queryRows QueryRowsFunc[R], opts ...Option) FS {
+	ar := &arfs[R]{queryRows: queryRows, permMask: PermAny}
 	for _, o := range opts {
 		o.apply(&ar.permMask)
 	}
 	return ar
 }
 
-type arfs struct {
-	db       *sql.DB
-	permMask PermMask
+type arfs[R Rows] struct {
+	queryRows QueryRowsFunc[R]
+	permMask  PermMask
 
 	dirInfo dirInfoCache
 }
 
-func (ar *arfs) canRead(mode uint32) bool {
+func (ar *arfs[_]) canRead(mode uint32) bool {
 	return mode&0444&uint32(ar.permMask) != 0
 }
 
-func (ar *arfs) canTraverse(mode uint32) bool {
+func (ar *arfs[_]) canTraverse(mode uint32) bool {
 	return mode&0111&uint32(ar.permMask) != 0
 }
 
-var _ FS = (*arfs)(nil)
+// queryRow implements [database/sql.DB.QueryRow] semantics using a [QueryRowsFunc].
+func (ar *arfs[R]) queryRow(query string, args []any, results []any) (bool, error) {
+	rows, err := ar.queryRows(query, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	if err := rows.Scan(results...); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+var _ FS = (*arfs[Rows])(nil)
 
 // Option is an option for [New].
 //
@@ -112,8 +139,8 @@ func (fi *fileinfo) String() string {
 	return fs.FormatFileInfo(fi)
 }
 
-func (fi *fileinfo) scan(scan func(dest ...any) error) error {
-	return scan(&fi.name, &fi.mode, &fi.mtime, &fi.sz)
+func (fi *fileinfo) scanners() []any {
+	return []any{&fi.name, &fi.mode, &fi.mtime, &fi.sz}
 }
 
 // Name implements interface [fs.FileInfo].
@@ -192,7 +219,7 @@ const (
 	sqlModeFilterReg        = `(mode&32768)<>0`      // 32768 = syscall.S_IFREG => regular files
 )
 
-func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
+func (ar *arfs[_]) ReadDir(name string) ([]fs.DirEntry, error) {
 	list, err := ar.readDir(name)
 	if len(list) > 0 {
 		sort.Slice(list, func(i, j int) bool {
@@ -205,7 +232,7 @@ func (ar *arfs) ReadDir(name string) ([]fs.DirEntry, error) {
 	return list, nil
 }
 
-func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
+func (ar *arfs[_]) readDir(name string) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
 		return nil, fs.ErrInvalid
 	}
@@ -226,7 +253,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 	}
 
 	nameEsc := escapeLike.Replace(name)
-	rows, err := ar.db.Query(``+
+	rows, err := ar.queryRows(``+
 		// Files
 		`SELECT SUBSTR(name,?),mode,mtime,sz`+
 		` FROM sqlar`+
@@ -257,7 +284,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 
 	for rows.Next() {
 		fi := new(fileinfo)
-		if err := fi.scan(rows.Scan); err != nil {
+		if err := rows.Scan(fi.scanners()...); err != nil {
 			return entries, err
 		}
 		// Some archives may have entries for directories
@@ -282,7 +309,7 @@ func (ar *arfs) readDir(name string) ([]fs.DirEntry, error) {
 }
 
 // Stat implements interface [fs.StatFS].
-func (ar *arfs) Stat(name string) (fs.FileInfo, error) {
+func (ar *arfs[_]) Stat(name string) (fs.FileInfo, error) {
 	if name == "." {
 		info, err := ar.statRoot()
 		if err != nil {
@@ -310,32 +337,34 @@ var fileinfoRoot = fileinfo{
 	sz:    0,
 }
 
-func (ar *arfs) statRoot() (*fileinfo, error) {
+func (ar *arfs[_]) statRoot() (*fileinfo, error) {
 	var fi *fileinfo
 	fi = ar.dirInfo.load(".")
 	if fi != nil {
 		return fi, nil
 	}
+
 	fi = new(fileinfo)
-	err := fi.scan(ar.db.QueryRow(`` +
-		`SELECT '.',mode,mtime,sz` +
-		` FROM sqlar` +
-		` WHERE name='.'` +
-		` LIMIT 1`).Scan)
-	switch err {
-	case sql.ErrNoRows:
-		fi = &fileinfoRoot
-		fallthrough
-	case nil:
-		return ar.dirInfo.store(".", fi), nil
-	default:
+	hasRow, err := ar.queryRow(``+
+		`SELECT '.',mode,mtime,sz`+
+		` FROM sqlar`+
+		` WHERE name='.'`+
+		` LIMIT 1`,
+		nil, fi.scanners())
+
+	if err != nil {
 		// Table sqlar doesn't exist or other error
 		return nil, err
 	}
+
+	if !hasRow {
+		fi = &fileinfoRoot
+	}
+	return ar.dirInfo.store(".", fi), nil
 }
 
 // Stat implements interface [fs.StatFS].
-func (ar *arfs) stat(name string) (*fileinfo, error) {
+func (ar *arfs[_]) stat(name string) (*fileinfo, error) {
 	dir, filename := path.Split(name)
 	if dir == "" {
 		fi, err := ar.statRoot()
@@ -367,54 +396,49 @@ func (ar *arfs) stat(name string) (*fileinfo, error) {
 
 	info = new(fileinfo)
 
-	err := info.scan(
-		ar.db.QueryRow(``+
-			`SELECT name,mode,mtime,sz`+
-			` FROM sqlar`+
-			` WHERE name=?`+
-			` AND `+sqlModeFilter+ // Skip file with broken mode
-			` LIMIT 1`,
-			name,
-		).Scan)
-	switch err {
-	case nil:
-		// OK
-	case sql.ErrNoRows:
+	hasRow, err := ar.queryRow(``+
+		`SELECT name,mode,mtime,sz`+
+		` FROM sqlar`+
+		` WHERE name=?`+
+		` AND `+sqlModeFilter+ // Skip file with broken mode
+		` LIMIT 1`,
+		[]any{name},
+		info.scanners(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !hasRow {
 		// Emulate directories like in ReadDir
 		var ok bool
-		err = ar.db.QueryRow(``+
+		hasRow, err = ar.queryRow(``+
 			`SELECT 1`+
 			` FROM sqlar`+
 			` WHERE SUBSTR(name,?)=?`+
 			` LIMIT 1`,
-			len(name)+1,
-			name+"/",
-		).Scan(&ok)
-		switch {
-		case err == nil && ok:
-			info.mode = dirMode
-		case err == sql.ErrNoRows || err == nil: // Case "err == nil" should never happen
-			return nil, fs.ErrNotExist
-		default:
+			[]any{len(name) + 1, name + "/"},
+			[]any{&ok},
+		)
+		if err != nil {
 			return nil, err
 		}
-	default:
-		return nil, err
+		if !hasRow {
+			return nil, fs.ErrNotExist
+		}
+		info.mode = dirMode
 	}
 	info.name = filename
-
 	if info.IsDir() {
 		info = ar.dirInfo.store(name, info)
 	}
-
 	return info, nil
 }
 
 // file gives access to a file in an SQLite Archive file.
 //
 // *file implements interface [fs.File].
-type file struct {
-	fs   *arfs
+type file[R Rows] struct {
+	fs   *arfs[R]
 	info fileinfo
 	path string
 	r    io.ReadCloser
@@ -423,18 +447,18 @@ type file struct {
 // dir gives access to a directory in an SQLite Archive file.
 //
 // *dir implements interface [fs.ReadDirFile].
-type dir struct {
-	file
+type dir[R Rows] struct {
+	file[R]
 	entries []fs.DirEntry
 }
 
 // Stat implements interface [fs.File].
-func (f *file) Stat() (fs.FileInfo, error) {
+func (f *file[_]) Stat() (fs.FileInfo, error) {
 	return &f.info, nil
 }
 
 // Read implements interface [fs.File].
-func (f *file) Read(b []byte) (int, error) {
+func (f *file[_]) Read(b []byte) (int, error) {
 	if f.r == nil {
 		if f.fs == nil { // Closed
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrClosed}
@@ -443,20 +467,19 @@ func (f *file) Read(b []byte) (int, error) {
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrPermission}
 		}
 		var buf []byte
-		err := f.fs.db.QueryRow(``+
+		hasRow, err := f.fs.queryRow(``+
 			`SELECT data`+
 			` FROM sqlar`+
 			` WHERE name=?`+
 			` AND `+sqlModeFilterReg,
-			f.path,
-		).Scan(&buf)
-		switch err {
-		case nil:
-			// OK
-		case sql.ErrNoRows:
-			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
-		default:
+			[]any{f.path},
+			[]any{&buf},
+		)
+		if err != nil {
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: err}
+		}
+		if !hasRow {
+			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
 		}
 		if len(buf) == int(f.info.sz) {
 			f.r = io.NopCloser(bytes.NewReader(buf))
@@ -468,7 +491,7 @@ func (f *file) Read(b []byte) (int, error) {
 }
 
 // Close implements interface [fs.File].
-func (f *file) Close() error {
+func (f *file[_]) Close() error {
 	r := f.r
 	f.fs, f.r = nil, nil
 	if r == nil {
@@ -478,7 +501,7 @@ func (f *file) Close() error {
 }
 
 // ReadDir implements interface [fs.ReadDirFile].
-func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
+func (d *dir[_]) ReadDir(n int) ([]fs.DirEntry, error) {
 	if d.file.fs == nil {
 		return nil, fs.ErrClosed
 	}
@@ -509,7 +532,7 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 }
 
 // Open implements interface [fs.FS].
-func (ar *arfs) Open(name string) (fs.File, error) {
+func (ar *arfs[R]) Open(name string) (fs.File, error) {
 	var info *fileinfo
 	var err error
 	if name == "." {
@@ -528,8 +551,8 @@ func (ar *arfs) Open(name string) (fs.File, error) {
 	}
 
 	if info.IsDir() {
-		return &dir{file: file{fs: ar, info: *info, path: name}}, nil
+		return &dir[R]{file: file[R]{fs: ar, info: *info, path: name}}, nil
 	}
 
-	return &file{fs: ar, info: *info, path: name}, nil
+	return &file[R]{fs: ar, info: *info, path: name}, nil
 }
