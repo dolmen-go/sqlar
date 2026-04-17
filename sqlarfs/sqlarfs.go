@@ -6,7 +6,6 @@ package sqlarfs
 import (
 	"bytes"
 	"compress/flate"
-	"database/sql"
 	"fmt"
 	"io"
 	"io/fs"
@@ -29,11 +28,14 @@ type FS interface {
 type Row interface {
 	Scan(...any) error
 	Err() error
+
+	ErrNoRows() error // Returns either database/sql.ErrNoRows or a equivalent
 }
 
 // Row is the interface of [*database/sql.Rows].
 type Rows interface {
-	Row
+	Scan(...any) error
+	Err() error
 	Next() bool
 	Close() error
 }
@@ -42,6 +44,42 @@ type Rows interface {
 type DB[R Row, RR Rows] interface {
 	QueryRow(q string, _ ...any) R
 	Query(q string, _ ...any) (RR, error)
+}
+
+type RowWithoutErrNoRows interface {
+	Scan(...any) error
+	Err() error
+}
+
+type DBWithoutErrNoRows[R RowWithoutErrNoRows, RR Rows] interface {
+	QueryRow(q string, args ...any) R
+	Query(q string, args ...any) (RR, error)
+}
+
+type rowWithErrNoRows struct {
+	RowWithoutErrNoRows
+	errNoRows error
+}
+
+func (r *rowWithErrNoRows) ErrNoRows() error {
+	return r.errNoRows
+}
+
+type dbWithErrNoRows[R RowWithoutErrNoRows, RowsT Rows] struct {
+	db        DBWithoutErrNoRows[R, RowsT]
+	errNoRows error
+}
+
+func (db *dbWithErrNoRows[R, _]) QueryRow(q string, args ...any) Row {
+	return &rowWithErrNoRows{db.db.QueryRow(q, args...), db.errNoRows}
+}
+
+func (db *dbWithErrNoRows[_, RR]) Query(q string, args ...any) (RR, error) {
+	return db.db.Query(q, args...)
+}
+
+func WithErrNoRows[RowT RowWithoutErrNoRows, RowsT Rows](db DBWithoutErrNoRows[RowT, RowsT], errNoRows error) DB[Row, RowsT] {
+	return &dbWithErrNoRows[RowT, RowsT]{db, errNoRows}
 }
 
 // New returns an instance of [io/fs.FS] that allows to access the files in an [SQLite Archive File] opened with [database/sql].
@@ -336,13 +374,14 @@ func (ar *arfs[_, _, _]) statRoot() (*fileinfo, error) {
 		return fi, nil
 	}
 	fi = new(fileinfo)
-	err := fi.scan(ar.db.QueryRow(`` +
+	row := ar.db.QueryRow(`` +
 		`SELECT '.',mode,mtime,sz` +
 		` FROM sqlar` +
 		` WHERE name='.'` +
-		` LIMIT 1`).Scan)
+		` LIMIT 1`)
+	err := fi.scan(row.Scan)
 	switch err {
-	case sql.ErrNoRows:
+	case row.ErrNoRows():
 		fi = &fileinfoRoot
 		fallthrough
 	case nil:
@@ -386,19 +425,20 @@ func (ar *arfs[_, _, _]) stat(name string) (*fileinfo, error) {
 
 	info = new(fileinfo)
 
-	err := info.scan(
-		ar.db.QueryRow(``+
-			`SELECT name,mode,mtime,sz`+
-			` FROM sqlar`+
-			` WHERE name=?`+
-			` AND `+sqlModeFilter+ // Skip file with broken mode
-			` LIMIT 1`,
-			name,
-		).Scan)
+	row := ar.db.QueryRow(``+
+		`SELECT name,mode,mtime,sz`+
+		` FROM sqlar`+
+		` WHERE name=?`+
+		` AND `+sqlModeFilter+ // Skip file with broken mode
+		` LIMIT 1`,
+		name,
+	)
+	err := info.scan(row.Scan)
+	errNoRows := row.ErrNoRows()
 	switch err {
 	case nil:
 		// OK
-	case sql.ErrNoRows:
+	case errNoRows:
 		// Emulate directories like in ReadDir
 		var ok bool
 		err = ar.db.QueryRow(``+
@@ -412,7 +452,7 @@ func (ar *arfs[_, _, _]) stat(name string) (*fileinfo, error) {
 		switch {
 		case err == nil && ok:
 			info.mode = dirMode
-		case err == sql.ErrNoRows || err == nil: // Case "err == nil" should never happen
+		case err == errNoRows || err == nil: // Case "err == nil" should never happen
 			return nil, fs.ErrNotExist
 		default:
 			return nil, err
@@ -462,17 +502,18 @@ func (f *file[_, _, _]) Read(b []byte) (int, error) {
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrPermission}
 		}
 		var buf []byte
-		err := f.fs.db.QueryRow(``+
+		row := f.fs.db.QueryRow(``+
 			`SELECT data`+
 			` FROM sqlar`+
 			` WHERE name=?`+
 			` AND `+sqlModeFilterReg,
 			f.path,
-		).Scan(&buf)
+		)
+		err := row.Scan(&buf)
 		switch err {
 		case nil:
 			// OK
-		case sql.ErrNoRows:
+		case row.ErrNoRows():
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: fs.ErrNotExist}
 		default:
 			return 0, &fs.PathError{Op: "read", Path: f.path, Err: err}

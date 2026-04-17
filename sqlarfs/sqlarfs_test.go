@@ -105,7 +105,7 @@ func doConnRaw[T any](tb testing.TB, db *sql.DB, do func(T) error) error {
 func openFS(tb testing.TB, path string, opts ...sqlarfs.Option) fs.FS {
 	tb.Helper()
 	db := openDB(tb, path)
-	return sqlarfs.New(db, opts...)
+	return sqlarfs.New(sqlarfs.WithErrNoRows(db, sql.ErrNoRows), opts...)
 }
 
 func TestEmpty(t *testing.T) {
@@ -195,7 +195,7 @@ func BenchmarkDir(b *testing.B) {
 	// Benchmark the sqlarfs init and first pass of fstest.TestFS
 	b.Run("firstTestFS", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			ar = sqlarfs.New(db, sqlarfs.PermOwner)
+			ar = sqlarfs.New(sqlarfs.WithErrNoRows(db, sql.ErrNoRows), sqlarfs.PermOwner)
 			if err := fstest.TestFS(ar, files...); err != nil {
 				b.Fatal(err)
 			}
