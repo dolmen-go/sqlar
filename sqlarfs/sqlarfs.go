@@ -47,6 +47,7 @@ type QueryRowsFunc[R Rows] = func(query string, args ...any) (R, error)
 //	file:<path>?mode=ro&immutable=1
 //
 // The default permission mask used to enforce file permissions ('mode' column in the 'sqlar' table) is [PermAny].
+// Others masks are available: [PermOwner], [PermGroup], [PermOthers] as [Option].
 //
 // [SQLite Archive File]: https://sqlite.org/sqlar.html
 func New[R Rows](queryRows QueryRowsFunc[R], opts ...Option) FS {
